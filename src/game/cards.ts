@@ -1,0 +1,281 @@
+export type Rarity = "starter" | "common" | "uncommon" | "rare";
+export type CardAttribute = "unique" | "disposable";
+
+export type CardId =
+  // Legacy cards
+  | "attack" | "block" | "heal" | "execute" | "vulnerable" | "poison"
+  | "pierce" | "shatter"
+  | "drain" | "nullify" | "overload" | "reboot" | "combo" | "debug" | "cycler"
+  // Loop Runner Starter
+  | "lrAttack" | "lrBlock" | "quickScan"
+  // Loop Runner Common
+  | "initialize" | "noop" | "shift" | "sleep" | "forceQuit" | "overClock"
+  | "ping" | "incrementalAttack" | "refactoring" | "patch"
+  // Loop Runner Uncommon
+  | "incrementalBlock" | "conditionalBlock" | "bufferOverflowProtection"
+  | "asyncDraw" | "caching" | "multiThreading" | "garbageCollection"
+  // Loop Runner Rare
+  | "recursion" | "asyncAwait" | "stackOverflow" | "lrExecute" | "compilerOptimization";
+
+export interface CardDef {
+  id: CardId;
+  fn: string;
+  signature: string;
+  description: string;
+  rarity: Rarity;
+  attributes: CardAttribute[];
+}
+
+export const CARDS: Record<CardId, CardDef> = {
+  // ─── Legacy cards ───────────────────────────────────────────
+  attack: {
+    id: "attack", fn: "attack",
+    signature: "attack(n)",
+    description: "敵に n ダメージ。コスト: n",
+    rarity: "starter", attributes: [],
+  },
+  block: {
+    id: "block", fn: "block",
+    signature: "block(n)",
+    description: "ブロックを n 得る（被ダメ軽減）。コスト: n",
+    rarity: "starter", attributes: [],
+  },
+  heal: {
+    id: "heal", fn: "heal",
+    signature: "heal(n)",
+    description: "自分の HP を n 回復。コスト: n",
+    rarity: "starter", attributes: [],
+  },
+  execute: {
+    id: "execute", fn: "execute",
+    signature: "execute()",
+    description: "敵HP≤12なら即死（ブロック無視）。コスト: 3",
+    rarity: "rare", attributes: [],
+  },
+  vulnerable: {
+    id: "vulnerable", fn: "vulnerable",
+    signature: "vulnerable()",
+    description: "このターン敵の被ダメ+50%。コスト: 2",
+    rarity: "uncommon", attributes: [],
+  },
+  poison: {
+    id: "poison", fn: "poison",
+    signature: "poison(n)",
+    description: "毒 n 付与。毎ターン終了時にダメージ。コスト: n",
+    rarity: "common", attributes: [],
+  },
+  pierce: {
+    id: "pierce", fn: "pierce",
+    signature: "pierce(n)",
+    description: "ブロックを無視して n ダメージ。コスト: n",
+    rarity: "common", attributes: [],
+  },
+  shatter: {
+    id: "shatter", fn: "shatter",
+    signature: "shatter()",
+    description: "敵のブロックを半減にする。コスト: 2",
+    rarity: "uncommon", attributes: [],
+  },
+  drain: {
+    id: "drain", fn: "drain",
+    signature: "drain(n)",
+    description: "n ダメージ＋自分 ceil(n/2) 回復。コスト: n+1",
+    rarity: "uncommon", attributes: [],
+  },
+  nullify: {
+    id: "nullify", fn: "nullify",
+    signature: "nullify()",
+    description: "敵のブロックを 0 にする。コスト: 3",
+    rarity: "rare", attributes: [],
+  },
+  overload: {
+    id: "overload", fn: "overload",
+    signature: "overload(n)",
+    description: "ブロック貫通 n×2 ダメージ（敵は体力を直接失う）。自分も n の体力を失う。コスト: n",
+    rarity: "uncommon", attributes: [],
+  },
+  reboot: {
+    id: "reboot", fn: "reboot",
+    signature: "reboot()",
+    description: "エネルギー +5（上限まで）。1ターン1回のみ。コスト: 0",
+    rarity: "uncommon", attributes: ["unique"],
+  },
+  combo: {
+    id: "combo", fn: "combo",
+    signature: "combo(n)",
+    description: "n×コンボ数 ダメージ（同ターン中に呼ぶたびに倍率↑、ターン終了でリセット）。コスト: n",
+    rarity: "common", attributes: [],
+  },
+  debug: {
+    id: "debug", fn: "debug",
+    signature: "debug()",
+    description: "敵の詳細情報をコンソールに出力。コスト: 0",
+    rarity: "common", attributes: [],
+  },
+  cycler: {
+    id: "cycler", fn: "cycler",
+    signature: "cycler(n)",
+    description: "n枚捨てて n枚ドロー（捨てるカードを選択）。コスト: 0",
+    rarity: "uncommon", attributes: ["unique"],
+  },
+
+  // ─── Loop Runner Starter ─────────────────────────────────────
+  lrAttack: {
+    id: "lrAttack", fn: "attack",
+    signature: "attack()",
+    description: "敵に 6 ダメージ。コスト: 1",
+    rarity: "starter", attributes: [],
+  },
+  lrBlock: {
+    id: "lrBlock", fn: "block",
+    signature: "block()",
+    description: "ブロック +5。コスト: 1",
+    rarity: "starter", attributes: [],
+  },
+  quickScan: {
+    id: "quickScan", fn: "quickScan",
+    signature: "quickScan()",
+    description: "敵に 3 ダメージ＋カード 1 枚引く。コスト: 1",
+    rarity: "starter", attributes: [],
+  },
+
+  // ─── Loop Runner Common ───────────────────────────────────────
+  initialize: {
+    id: "initialize", fn: "initialize",
+    signature: "initialize()",
+    description: "ブロック +3。次ターン開始時エネルギー+1・ドロー+1。コスト: 1",
+    rarity: "common", attributes: [],
+  },
+  noop: {
+    id: "noop", fn: "noop",
+    signature: "noop()",
+    description: "何もしない（コンボ +1 のみ）。コスト: 0",
+    rarity: "common", attributes: ["unique"],
+  },
+  shift: {
+    id: "shift", fn: "shift",
+    signature: "shift()",
+    description: "手札を 1 枚捨て、カードを 1 枚引く。コスト: 0",
+    rarity: "common", attributes: ["unique"],
+  },
+  sleep: {
+    id: "sleep", fn: "sleep",
+    signature: "sleep()",
+    description: "ブロック +3。次ターン開始時エネルギー +1。コスト: 1",
+    rarity: "common", attributes: [],
+  },
+  forceQuit: {
+    id: "forceQuit", fn: "forceQuit",
+    signature: "forceQuit()",
+    description: "敵に 4 ダメージ。実行を終了し次ターンのドロー +2。コスト: 1",
+    rarity: "common", attributes: [],
+  },
+  overClock: {
+    id: "overClock", fn: "overClock",
+    signature: "overClock()",
+    description: "自分 HP -2 してエネルギー +1。コスト: 0",
+    rarity: "common", attributes: [],
+  },
+  ping: {
+    id: "ping", fn: "ping",
+    signature: "ping()",
+    description: "敵にコンボ数 × 1 ダメージ。コスト: 1",
+    rarity: "common", attributes: [],
+  },
+  incrementalAttack: {
+    id: "incrementalAttack", fn: "incrementalAttack",
+    signature: "incrementalAttack()",
+    description: "敵に 8 ダメージ。コンボ数が奇数なら追加 4 ダメージ。コスト: 2",
+    rarity: "common", attributes: [],
+  },
+  refactoring: {
+    id: "refactoring", fn: "refactoring",
+    signature: "refactoring()",
+    description: "手札で最もコストが高いカード 2 枚のコストを -1（最低 1）。コスト: 1",
+    rarity: "common", attributes: [],
+  },
+  patch: {
+    id: "patch", fn: "patch",
+    signature: "patch()",
+    description: "自分 HP +2 回復。使い捨て。コスト: 0",
+    rarity: "common", attributes: ["disposable"],
+  },
+
+  // ─── Loop Runner Uncommon ─────────────────────────────────────
+  incrementalBlock: {
+    id: "incrementalBlock", fn: "incrementalBlock",
+    signature: "incrementalBlock()",
+    description: "ブロック +コンボ数。コスト: 2",
+    rarity: "uncommon", attributes: ["unique"],
+  },
+  conditionalBlock: {
+    id: "conditionalBlock", fn: "conditionalBlock",
+    signature: "conditionalBlock()",
+    description: "ブロック +2。コンボ数が偶数なら代わりにブロック +5。コスト: 1",
+    rarity: "uncommon", attributes: [],
+  },
+  bufferOverflowProtection: {
+    id: "bufferOverflowProtection", fn: "bufferOverflowProtection",
+    signature: "bufferOverflowProtection()",
+    description: "手札を 1 枚捨て、ブロック +3。コスト: 1",
+    rarity: "uncommon", attributes: [],
+  },
+  asyncDraw: {
+    id: "asyncDraw", fn: "asyncDraw",
+    signature: "asyncDraw()",
+    description: "カードを 1 枚引く。コンボ数が 5 以上なら 3 枚引く。コスト: 1",
+    rarity: "uncommon", attributes: [],
+  },
+  caching: {
+    id: "caching", fn: "caching",
+    signature: "caching()",
+    description: "手札の最高コストカードを次ターンにコスト 0 で持ち越す。コスト: 0",
+    rarity: "uncommon", attributes: ["unique"],
+  },
+  multiThreading: {
+    id: "multiThreading", fn: "multiThreading",
+    signature: "multiThreading()",
+    description: "コンボ +3（自身の +1 含む）、カード 1 枚引く。コスト: 2",
+    rarity: "uncommon", attributes: ["unique"],
+  },
+  garbageCollection: {
+    id: "garbageCollection", fn: "garbageCollection",
+    signature: "garbageCollection()",
+    description: "捨て札の通常カードを 1 枚コスト 0 で手札に戻す。エネルギー +1。コスト: 1",
+    rarity: "uncommon", attributes: ["disposable"],
+  },
+
+  // ─── Loop Runner Rare ─────────────────────────────────────────
+  recursion: {
+    id: "recursion", fn: "recursion",
+    signature: "recursion()",
+    description: "プログラムを先頭から再実行。再実行中は Unique フラグがリセットされる。エネルギー引き継ぎ。コスト: 3",
+    rarity: "rare", attributes: ["unique", "disposable"],
+  },
+  asyncAwait: {
+    id: "asyncAwait", fn: "asyncAwait",
+    signature: "asyncAwait()",
+    description: "以降の全攻撃に現在のコンボ数分の追加ダメージ。コスト: 2",
+    rarity: "rare", attributes: ["disposable"],
+  },
+  stackOverflow: {
+    id: "stackOverflow", fn: "stackOverflow",
+    signature: "stackOverflow()",
+    description: "自分 HP -5。このターン中コンボ増加が +1 の代わりに +3 になる。コスト: 1",
+    rarity: "rare", attributes: ["disposable"],
+  },
+  lrExecute: {
+    id: "lrExecute", fn: "execute",
+    signature: "execute()",
+    description: "敵 HP が コンボ数 × 3 以下なら即死（ブロック無視）。コスト: 3",
+    rarity: "rare", attributes: ["unique"],
+  },
+  compilerOptimization: {
+    id: "compilerOptimization", fn: "compilerOptimization",
+    signature: "compilerOptimization()",
+    description: "カード 3 枚引く。このターン手札の通常カード（属性なし）のコストを 0 にする。コスト: 2",
+    rarity: "rare", attributes: ["unique"],
+  },
+};
+
+export const HAND_SIZE = 5;
