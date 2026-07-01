@@ -64,9 +64,16 @@ function renderHand(hand: CardId[], disabledCards?: Set<CardId>, costZeroCardIds
     card.className = "card" + (disabled ? " card-disabled" : "");
     card.dataset.rarity = def.rarity;
     card.title     = disabled ? "このターンすでに使用済み" : "クリックでエディタに挿入";
+    const attrTags = def.attributes.map(a =>
+      `<span class="attr-tag attr-${a}">${a === "unique" ? "Unique" : "Disp"}</span>`
+    ).join("");
     card.innerHTML = `
-      <span class="rarity-badge rarity-${def.rarity}"></span>
-      <span class="sig">${def.signature}</span><span class="cost">×${count}${isCostZero ? " [0]" : ""}</span>
+      <div class="card-header-row">
+        <span class="rarity-badge rarity-${def.rarity}" title="${def.rarity}"></span>
+        <span class="sig">${def.signature}</span>
+        <span class="cost">×${count}${isCostZero ? " <span class='cost-zero'>0</span>" : ""}</span>
+        ${attrTags}
+      </div>
       <div class="desc">${def.description}</div>
       ${disabled ? '<div class="card-disabled-overlay">🚫</div>' : ""}`;
     if (!disabled) {
@@ -95,9 +102,16 @@ export function renderPileCards(pile: CardId[]): DocumentFragment {
     const card = document.createElement("div");
     card.className = "card";
     card.dataset.rarity = def.rarity;
+    const pAttrTags = def.attributes.map(a =>
+      `<span class="attr-tag attr-${a}">${a === "unique" ? "Unique" : "Disp"}</span>`
+    ).join("");
     card.innerHTML = `
-      <span class="rarity-badge rarity-${def.rarity}"></span>
-      <span class="sig">${def.signature}</span><span class="cost">×${count}</span>
+      <div class="card-header-row">
+        <span class="rarity-badge rarity-${def.rarity}" title="${def.rarity}"></span>
+        <span class="sig">${def.signature}</span>
+        <span class="cost">×${count}</span>
+        ${pAttrTags}
+      </div>
       <div class="desc">${def.description}</div>`;
     card.addEventListener("click", () =>
       window.dispatchEvent(new CustomEvent("insert-snippet", { detail: def.signature }))
@@ -145,7 +159,10 @@ export function appendConsoleLog(lines: string[]): void {
   for (const text of lines) {
     const line = document.createElement("div");
     line.className = "console-line" +
-      (text.startsWith("[error]") ? " con-error" : text.startsWith("[warn]") ? " con-warn" : "");
+      (text.startsWith("[error]") ? " con-error"
+        : text.startsWith("[warn]") ? " con-warn"
+        : text.startsWith("[DAEMON]") ? " con-daemon"
+        : "");
     line.textContent = text;
     el.appendChild(line);
   }

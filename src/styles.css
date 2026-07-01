@@ -115,6 +115,16 @@ body {
 .widget-btn.primary { background: var(--accent); color: #06141c; border-color: var(--accent); }
 .widget-btn.primary:hover { filter: brightness(1.1); }
 .widget-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+.widget-btn.autorun-btn.active {
+  background: #f5a623;
+  color: #06080e;
+  border-color: #f5a623;
+  animation: autorun-pulse 1.1s ease-in-out infinite;
+}
+@keyframes autorun-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
 
 .widget-body {
   padding: 10px;
@@ -122,6 +132,12 @@ body {
   border-radius: 0 0 10px 10px;
   overflow: hidden;   /* ボディはコンテンツをクリップ */
 }
+
+/* エディタ用widgetはサジェスト（Monacoのオーバーフローウィジェット）が
+   エディタ枠外へはみ出せるようクリッピングを解除する。
+   #canvas 内に描画されるため、ズームしてもカーソルと位置がズレない。 */
+.editor-widget .widget-body { overflow: visible; }
+.editor-widget .editor-wrap { overflow: visible; }
 
 /* ── リサイズハンドル ─────────────────────────────── */
 
@@ -389,6 +405,27 @@ body {
 .console-line::before { content: "> "; color: var(--muted); }
 .console-line.con-warn  { color: var(--energy); }
 .console-line.con-error { color: var(--danger); }
+.console-line.con-daemon { color: #f5a623; }
+
+/* ═══ Daemon ウィジェット ═══════════════════════════════════════ */
+
+.daemon-widget .widget-header {
+  background: linear-gradient(90deg, rgba(245, 166, 35, 0.18), transparent);
+  border-bottom: 1px solid #f5a62355;
+}
+.daemon-status-row {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #f5a623;
+  margin-bottom: 4px;
+}
+.daemon-deployed-row {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+#daemon-deployed-list { color: #f5a623; }
 
 /* ═══ 報酬モーダル ══════════════════════════════════════════ */
 
@@ -414,6 +451,13 @@ body {
   padding: 12px 14px;
 }
 .reward-card:hover { transform: none; border-color: var(--accent); }
+.reward-card .sig {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.76rem;
+  overflow-wrap: break-word;
+  word-break: break-all;
+}
 
 .reward-pick-btn {
   width: 100%;
@@ -824,19 +868,64 @@ body {
   line-height: 1.6;
 }
 
+/* ── デッキ確認ポップアップ（報酬モーダルより前面） */
+#pile-modal { z-index: 10000; }
+
+/* ── カードヘッダー行 ──────────────────────────────────────────── */
+.card-header-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.card-header-row .sig  { flex: 1; min-width: 0; }
+.card-header-row .cost { flex-shrink: 0; }
+
 /* ── レアリティバッジ ──────────────────────────────────────────── */
 .rarity-badge {
   display: inline-block;
   width: 8px; height: 8px;
   border-radius: 50%;
-  margin-right: 4px;
-  vertical-align: middle;
   flex-shrink: 0;
 }
 .rarity-starter { background: var(--muted); }
 .rarity-common  { background: #4fc36b; }
 .rarity-uncommon{ background: #5aafe8; }
 .rarity-rare    { background: #b06cff; }
+
+/* ── カード属性タグ ────────────────────────────────────────────── */
+.attr-tag {
+  font-size: 0.58rem; font-weight: 700;
+  border-radius: 3px; padding: 1px 5px;
+  flex-shrink: 0;
+}
+.attr-unique     { background: #5aafe8; color: #06080e; }
+.attr-disposable { background: #f5a623; color: #06080e; }
+
+/* コスト0表示 */
+.cost-zero { color: #4fc36b; font-weight: 700; }
+
+/* ── コンソール入力 ────────────────────────────────────────────── */
+.console-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.console-prompt { color: var(--accent); font-size: 0.85rem; user-select: none; }
+.console-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.82rem;
+  padding: 2px 0;
+}
 
 /* ── メインメニュー ──────────────────────────────────────────────── */
 #menu-screen, #char-select-screen {
@@ -894,6 +983,78 @@ body {
   padding: 6px 18px; cursor: pointer; font-size: 0.9rem;
 }
 .char-back-btn:hover { border-color: var(--text); color: var(--text); }
+.char-tutorial-btn {
+  background: none; border: 1px solid #f5a623;
+  color: #f5a623; border-radius: 6px;
+  padding: 6px 18px; cursor: pointer; font-size: 0.9rem; font-weight: 700;
+}
+.char-tutorial-btn:hover { background: #f5a62322; }
+
+/* ── チュートリアルモーダル ────────────────────────────────────── */
+.tutorial-popup { max-width: 520px; }
+.tutorial-modal-body {
+  padding: 18px 20px;
+  white-space: pre-line;
+  line-height: 1.7;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+.tutorial-modal-body code,
+.tutorial-modal-body { font-family: inherit; }
+.tutorial-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 20px 18px;
+}
+
+/* ── チュートリアルMarkdown共通（モーダル・常駐ウィジェット共通） ─── */
+.tutorial-modal-body p,
+.tutorial-widget-body p {
+  margin-bottom: 10px;
+}
+.tutorial-modal-body code,
+.tutorial-widget-body code {
+  background: var(--panel-2);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 0.85em;
+  color: var(--accent);
+}
+.tutorial-modal-body strong,
+.tutorial-widget-body strong {
+  color: var(--energy);
+}
+.tutorial-code {
+  background: #1a1f2b;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 8px 0 14px;
+  overflow-x: auto;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.tutorial-code div { white-space: pre; }
+
+/* ── チュートリアル常駐ウィジェット ────────────────────────────── */
+.tutorial-widget .widget-header {
+  background: linear-gradient(90deg, rgba(106, 209, 255, 0.15), transparent);
+  border-bottom: 1px solid #6ad1ff55;
+}
+.tutorial-widget-body {
+  font-size: 0.82rem;
+  line-height: 1.6;
+  overflow-y: auto;
+  max-height: 340px;
+}
+.tutorial-widget-title {
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 8px;
+  font-size: 0.8rem;
+}
 
 /* ── ホームボタン ────────────────────────────────────────────────── */
 #home-btn {

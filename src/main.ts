@@ -1,14 +1,15 @@
 import "./styles.css";
 
-import { type MonacoEditor, createEditor, getCode, setCode, insertText } from "./ui/editor";
-import { MAX_ENERGY, type CombatState } from "./game/state";
-import { HAND_SIZE, CARDS, type CardId } from "./game/cards";
+import { type MonacoEditor, createEditor, getCode, setCode, insertText, colorizeCode } from "./ui/editor";
+import { MAX_ENERGY, MAX_DAEMON_COST, type CombatState } from "./game/state";
+import { HAND_SIZE, CARDS, getCardBaseCost, type CardId } from "./game/cards";
 import { CHARACTERS, getCharacter, getAllCharacterCards, type CharacterDef } from "./game/characters";
-import { STAGES } from "./game/stages";
+import { STAGES, type StageDef } from "./game/stages";
+import { TUTORIAL_STEPS } from "./game/tutorial";
 import { Deck } from "./game/deck";
 import { applyAction } from "./game/actions";
-import { chooseIntent, enemyAct } from "./game/enemy";
 import { runUserCode, DEFAULT_UNLOCKS, type UnlockFunctions, type DeckSnapshot } from "./sandbox/runCode";
+import type { RunResult } from "./sandbox/worker";
 import {
   render, renderPileCards,
   appendLog, clearLog,
@@ -24,10 +25,13 @@ interface EditorEntry {
   widget: HTMLElement;
   titleEl: HTMLSpanElement;
   runBtn: HTMLButtonElement | null;
+  autoBtn: HTMLButtonElement | null;
+  autorun: boolean;
   delBtn: HTMLButtonElement;
   errorEl: HTMLElement;
   wrap: HTMLElement;
   kind: "main" | "library";
+  resyncLayout: () => void;
 }
 
 interface EditorSaveEntry {
@@ -389,17 +393,22 @@ function buildRewardModal(): void {
 }
 
 function showRewardScreen(char: CharacterDef, onPick: (id: CardId | null) => void): void {
-  // Build reward pool from character's card pool
-  const allPool: CardId[] = [
-    ...char.cardPool.common,
-    ...char.cardPool.uncommon,
-    ...char.cardPool.rare,
-  ];
-  const pool = [...allPool];
+  // 重み付きランダム: Common 55% / Uncommon 30% / Rare 15%
+  const pickWeighted = (): CardId | null => {
+    const r = Math.random();
+    let pool: CardId[];
+    if (r < 0.55)      pool = char.cardPool.common;
+    else if (r < 0.85) pool = char.cardPool.uncommon;
+    else               pool = char.cardPool.rare;
+    if (pool.length === 0) pool = char.cardPool.common;
+    return pool[Math.floor(Math.random() * pool.length)] ?? null;
+  };
+
   const choices: CardId[] = [];
-  for (let i = 0; i < 3 && pool.length > 0; i++) {
-    const idx = Math.floor(Math.random() * pool.length);
-    choices.push(pool.splice(idx, 1)[0]);
+  const seen = new Set<CardId>();
+  for (let tries = 0; tries < 30 && choices.length < 3; tries++) {
+    const picked = pickWeighted();
+    if (picked && !seen.has(picked)) { seen.add(picked); choices.push(picked); }
   }
 
   const cardsEl = document.getElementById("reward-cards")!;
@@ -444,6 +453,32 @@ function closeRewardModal(): void {
   document.getElementById("reward-modal")?.classList.add("hidden");
 }
 
+// ── チュートリアルモーダル ────────────────────────────────────────────
+
+function buildTutorialModal(): void {
+  const modal = document.createElement("div");
+  modal.id = "tutorial-modal";
+  modal.className = "pile-modal hidden";
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "pile-backdrop";
+
+  const popup = document.createElement("div");
+  popup.className = "pile-popup tutorial-popup";
+  popup.innerHTML = `
+    <div class="pile-popup-header">
+      <span id="tutorial-modal-title" class="pile-popup-title">📘 チュートリアル</span>
+    </div>
+    <div id="tutorial-modal-body" class="tutorial-modal-body"></div>
+    <div class="tutorial-modal-footer">
+      <button id="tutorial-start-btn" class="widget-btn primary">はじめる →</button>
+    </div>
+  `;
+
+  modal.append(backdrop, popup);
+  document.body.appendChild(modal);
+}
+
 // ── 固定ウィジェット ────────────────────────────────────────────────
 
 function buildEnemyWidget(): void {
@@ -467,7 +502,7 @@ function buildPlayerWidget(): void {
       <span id="player-hp-text" class="hp-text"></span>
       <span id="player-block" class="block-badge"></span>
     </div>
-    <div class="energy-row">⚡ <span id="energy-text"></span><span id="run-remaining" class="run-remaining"></span></div>
+    <div class="energy-row">⚡ Main Clock: <span id="energy-text"></span><span id="run-remaining" class="run-remaining"></span></div>
   `);
   setupResize(widget);
 }
@@ -504,11 +539,115 @@ function buildDeckWidget(): void {
 }
 
 function buildConsoleWidget(): void {
-  const { widget } = createWidget("console", "CONSOLE", 300, 440, 370, `<div id="console-output"></div>`);
+  const { widget } = createWidget("console", "CONSOLE", 300, 440, 370, `
+    <div id="console-output"></div>
+    <div class="console-input-row">
+      <span class="console-prompt">&gt;</span>
+      <input id="console-input" class="console-input" placeholder="mainClock(), comboCount()..." spellcheck="false" />
+    </div>
+  `);
   setupResize(widget, (_w, h) => {
     const el = document.getElementById("console-output");
-    if (el) el.style.height = `${Math.max(40, h - 52)}px`;
+    if (el) el.style.height = `${Math.max(40, h - 76)}px`;
   });
+
+  document.getElementById("console-input")!.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const input = e.currentTarget as HTMLInputElement;
+    const expr = input.value.trim();
+    if (!expr) return;
+    input.value = "";
+
+    // deploy <fn名>: 手札のカードをDaemonへ永久デプロイする
+    const deployMatch = /^deploy\s+(\S+)$/.exec(expr);
+    if (deployMatch) {
+      if (busy || over) {
+        appendConsoleLog([`> ${expr}`, "[error] 実行中はデプロイできません"]);
+        return;
+      }
+      const fnName = deployMatch[1];
+      const BLOCKED_FNS = ["forceQuit", "cycler", "recursion"];
+      if (BLOCKED_FNS.includes(fnName)) {
+        appendConsoleLog([`> ${expr}`, `[error] 「${fnName}」はDaemonにデプロイできません`]);
+        return;
+      }
+      const id = deck.hand.find(cid => CARDS[cid]?.fn === fnName);
+      if (!id) {
+        appendConsoleLog([`> ${expr}`, `[error] 手札に "${fnName}" が見つかりません`]);
+        return;
+      }
+      const deployCost = getCardBaseCost(id) * 2;
+      if (state.energy < deployCost) {
+        appendConsoleLog([`> ${expr}`, `[error] Main Clock不足: デプロイには ${deployCost} 必要ですが残り ${state.energy} です`]);
+        return;
+      }
+      state.energy -= deployCost;
+      deck.deploy(id);
+      appendConsoleLog([`> ${expr}`, `✅ 「${fnName}」をDaemonへデプロイしました（Main Clock -${deployCost}）`]);
+      render(state, deck, getDisabledCards());
+      updateDaemonDisplay();
+      return;
+    }
+
+    // エディタと同じアンロック制限を適用
+    const readFns: Record<string, () => unknown> = {
+      enemyHp:     () => state.enemy.hp,
+      myHp:        () => state.player.hp,
+      myBlock:     () => state.player.block,
+      mainClock:   () => state.energy,
+      daemonCost:  () => state.daemonCost,
+      enemyBlock:  () => state.enemy.block,
+      enemyIntent: () => ({ ...state.enemy.intent }),
+      comboCount:  () => state.comboCount,
+    };
+    if (devUnlocks.deckInfo) {
+      const toFn = (ids: CardId[]) => ids.map(id => CARDS[id]?.fn ?? id);
+      readFns["myHand"]     = () => toFn([...deck.hand]);
+      readFns["myDeck"]     = () => toFn([...deckCards]);
+      readFns["myDrawPile"] = () => toFn([...deck.drawPile]);
+      readFns["myDiscard"]  = () => toFn([...deck.discardPile]);
+    }
+    const names  = Object.keys(readFns);
+    const values = Object.values(readFns);
+    try {
+      // eslint-disable-next-line no-new-func
+      const result = new Function(...names, `"use strict"; return (${expr})`)(...values);
+      appendConsoleLog([`> ${expr}`, `← ${JSON.stringify(result)}`]);
+    } catch (err) {
+      appendConsoleLog([`> ${expr}`, `[error] ${err instanceof Error ? err.message : String(err)}`]);
+    }
+  });
+}
+
+// ── Daemon ウィジェット（常駐・削除不可・1つだけ） ───────────────────
+
+let daemonEditor: MonacoEditor;
+
+function buildDaemonWidget(): void {
+  const { widget } = createWidget("daemon", "DAEMON", 700, 440, 370, `
+    <div class="daemon-status-row">🔧 Daemon Cost: <span id="daemon-cost-text">0 / 0</span></div>
+    <div class="daemon-deployed-row">デプロイ済み: <span id="daemon-deployed-list">(なし)</span></div>
+    <div class="editor-wrap" id="daemon-editor-wrap"></div>
+  `);
+  widget.classList.add("editor-widget", "daemon-widget");
+  setupResize(widget, (_w, h) => {
+    const wrap = document.getElementById("daemon-editor-wrap");
+    if (wrap) wrap.style.height = `${Math.max(60, h - 84)}px`;
+  });
+
+  const wrap = document.getElementById("daemon-editor-wrap")!;
+  daemonEditor = createEditor(wrap, "", () => deck?.deployedCards ?? [], () => devUnlocks);
+  daemonEditor.onDidFocusEditorWidget(() => { lastFocused = daemonEditor; });
+}
+
+function updateDaemonDisplay(): void {
+  const costEl = document.getElementById("daemon-cost-text");
+  if (costEl && state) costEl.textContent = `${state.daemonCost} / ${state.maxDaemonCost}`;
+  const listEl = document.getElementById("daemon-deployed-list");
+  if (listEl && deck) {
+    const names = deck.deployedCards.map(id => CARDS[id]?.fn ?? id);
+    listEl.textContent = names.length > 0 ? names.join(", ") : "(なし)";
+  }
 }
 
 // ── エディタウィジェット ────────────────────────────────────────────
@@ -524,6 +663,7 @@ function debouncedSave(): void {
 }
 
 function saveEditorState(): void {
+  if (tutorialMode) return; // チュートリアル中のエディタは通常保存を上書きしない
   const data: EditorSaveEntry[] = entries.map(e => ({
     title: e.titleEl.textContent ?? "",
     kind: e.kind,
@@ -566,6 +706,8 @@ function addEditor(
     { editableTitle: true },
   );
 
+  widget.classList.add("editor-widget");
+
   if (savedH) {
     widget.style.height = `${savedH}px`;
   }
@@ -582,11 +724,18 @@ function addEditor(
   const headerActions = widget.querySelector(".widget-header-actions")!;
 
   let runBtn: HTMLButtonElement | null = null;
+  let autoBtn: HTMLButtonElement | null = null;
   if (kind === "main") {
     runBtn = document.createElement("button");
     runBtn.className = "widget-btn primary";
     runBtn.textContent = "▶ RUN";
     headerActions.appendChild(runBtn);
+
+    autoBtn = document.createElement("button");
+    autoBtn.className = "widget-btn autorun-btn";
+    autoBtn.textContent = "⟳ AUTO";
+    autoBtn.title = "endTurn() 到達時に自動でこのエディタを再実行し続けます";
+    headerActions.appendChild(autoBtn);
   }
 
   const delBtn = document.createElement("button");
@@ -605,15 +754,22 @@ function addEditor(
   editor.onDidChangeModelContent(() => debouncedSave());
 
   widget.dataset.minW = "320";
-  setupResize(widget, (_w, h) => {
+  const syncWrapHeight = (h: number): void => {
     const headerH = widget.querySelector<HTMLElement>(".widget-header")?.offsetHeight ?? 32;
     wrap.style.height = `${Math.max(80, h - headerH - errorEl.offsetHeight - 24)}px`;
-  });
+    editor.layout();
+  };
+  setupResize(widget, (_w, h) => syncWrapHeight(h));
+  // ロード直後は canvasRoot が非表示（offsetHeight=0）のため、この時点の同期は無意味。
+  // ゲーム画面表示時に resyncLayout() 経由で改めて呼び直す。
+  syncWrapHeight(widget.offsetHeight || savedH || 300);
+  const resyncLayout = () => syncWrapHeight(widget.offsetHeight);
 
-  const entry: EditorEntry = { editor, widget, titleEl, runBtn, delBtn, errorEl, wrap, kind };
+  const entry: EditorEntry = { editor, widget, titleEl, runBtn, autoBtn, autorun: false, delBtn, errorEl, wrap, kind, resyncLayout };
   entries.push(entry);
 
   if (runBtn) runBtn.addEventListener("click", () => onRun(entry));
+  if (autoBtn) autoBtn.addEventListener("click", () => toggleAutorun(entry));
   delBtn.addEventListener("click", () => removeEditor(entry));
 
   bringToFront(widget);
@@ -651,10 +807,9 @@ function setAllRunButtons(enabled: boolean): void {
 }
 
 function restoreButtons(): void {
-  const remaining = 2 - runCount;
   entries.forEach(e => {
     if (e.runBtn) {
-      e.runBtn.disabled    = remaining <= 0;
+      e.runBtn.disabled    = false;
       e.runBtn.textContent = "▶ RUN";
     }
   });
@@ -662,7 +817,7 @@ function restoreButtons(): void {
   (document.getElementById("add-main-btn") as HTMLButtonElement).disabled = false;
   (document.getElementById("add-lib-btn")  as HTMLButtonElement).disabled = false;
   const runRemEl = document.getElementById("run-remaining");
-  if (runRemEl) runRemEl.textContent = `　▶ 残り ${Math.max(0, remaining)}`;
+  if (runRemEl) runRemEl.textContent = "";
 }
 
 // ── アンロック状態 ──────────────────────────────────────────────────
@@ -681,7 +836,12 @@ function getDeckSnapshot(): DeckSnapshot {
 // ── ローグライク状態 ────────────────────────────────────────────────
 
 const HEAL_RATE     = 0.10;
-const TOTAL_STAGES  = STAGES.length;
+
+let activeStages: StageDef[] = STAGES;
+const totalStages = () => activeStages.length;
+
+let tutorialMode      = false;
+let tutorialStepIndex = 0;
 
 let selectedCharacter: CharacterDef = CHARACTERS[0];
 let PLAYER_MAX_HP = selectedCharacter.hp;
@@ -691,9 +851,9 @@ let runPlayerHp           = PLAYER_MAX_HP;
 let currentStageIndex     = 0;
 let state: CombatState;
 let deck: Deck;
-let busy     = false;
-let over     = false;
-let runCount = 0;
+let busy            = false;
+let over            = false;
+let currentIntentIndex = 0; // intentPattern 内の現在位置
 
 const INITIAL_CODE = `// 手札の関数を使って敵を倒そう！
 // 例: if (enemyHp() <= 12) execute(); else attack();
@@ -716,6 +876,7 @@ function showMenuScreen(): void {
 }
 
 function showCharSelectScreen(): void {
+  canvasRoot.classList.add("hidden");
   document.getElementById("menu-screen")!.classList.add("hidden");
   document.getElementById("char-select-screen")!.classList.remove("hidden");
 }
@@ -724,6 +885,12 @@ function showGameScreen(): void {
   document.getElementById("menu-screen")!.classList.add("hidden");
   document.getElementById("char-select-screen")!.classList.add("hidden");
   canvasRoot.classList.remove("hidden");
+  // 表示直後は canvasRoot がまだ非表示だった間の offsetHeight(=0) を引きずっているため、
+  // 見えるようになった直後に実サイズへ再同期する
+  requestAnimationFrame(() => {
+    entries.forEach(e => e.resyncLayout());
+    daemonEditor?.layout();
+  });
 }
 
 function buildMenuScreen(): void {
@@ -740,9 +907,15 @@ function buildCharSelectScreen(): void {
   const el = document.getElementById("char-select-screen")!;
   el.innerHTML = `
     <div class="char-select-title">キャラクターを選択</div>
+    <button class="char-tutorial-btn" id="char-tutorial-btn">📘 チュートリアル</button>
     <div class="char-grid" id="char-grid"></div>
     <button class="char-back-btn" id="char-back-btn">← 戻る</button>
   `;
+
+  document.getElementById("char-tutorial-btn")!.addEventListener("click", () => {
+    showGameScreen();
+    startTutorial();
+  });
 
   const grid = document.getElementById("char-grid")!;
   for (const char of CHARACTERS) {
@@ -790,10 +963,160 @@ function startGame(characterId: string): void {
   startBattle();
 }
 
+// ── チュートリアル ──────────────────────────────────────────────────
+
+function setTutorialUIVisible(visible: boolean): void {
+  const unlockBtn = document.getElementById("unlock-panel-btn");
+  if (unlockBtn) unlockBtn.style.display = visible ? "" : "none";
+  if (!visible) document.getElementById("unlock-panel")?.classList.add("hidden");
+  const refBtn = document.getElementById("ref-btn");
+  if (refBtn) refBtn.style.display = visible ? "" : "none";
+  const addMainBtn = document.getElementById("add-main-btn");
+  if (addMainBtn) addMainBtn.style.display = visible ? "" : "none";
+  const endTurnBtn = document.getElementById("end-turn-btn");
+  if (endTurnBtn) endTurnBtn.style.display = visible ? "" : "none";
+}
+
+// ごく簡易なMarkdown→HTML変換。```lang フェンスはMonacoのcolorizeでシンタックスハイライトする。
+async function renderTutorialMarkdown(md: string): Promise<string> {
+  const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+  const parts: Array<{ type: "text" | "code"; content: string; lang?: string }> = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = codeBlockRegex.exec(md))) {
+    if (match.index > lastIndex) parts.push({ type: "text", content: md.slice(lastIndex, match.index) });
+    parts.push({ type: "code", content: match[2].replace(/\n$/, ""), lang: match[1] || "javascript" });
+    lastIndex = codeBlockRegex.lastIndex;
+  }
+  if (lastIndex < md.length) parts.push({ type: "text", content: md.slice(lastIndex) });
+
+  const htmlParts: string[] = [];
+  for (const part of parts) {
+    if (part.type === "code") {
+      const highlighted = await colorizeCode(part.content, part.lang);
+      htmlParts.push(`<pre class="tutorial-code">${highlighted}</pre>`);
+    } else {
+      const escaped = part.content
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const withInlineCode = escaped.replace(/`([^`]+)`/g, "<code>$1</code>");
+      const withBold       = withInlineCode.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      const paragraphs = withBold
+        .split(/\n\n+/)
+        .filter(p => p.trim())
+        .map(p => `<p>${p.replace(/\n/g, "<br>")}</p>`)
+        .join("");
+      htmlParts.push(paragraphs);
+    }
+  }
+  return htmlParts.join("");
+}
+
+let tutorialWidgetEl: HTMLElement | null = null;
+
+function removeTutorialWidget(): void {
+  tutorialWidgetEl?.remove();
+  tutorialWidgetEl = null;
+}
+
+function buildTutorialWidget(): void {
+  removeTutorialWidget();
+  const { widget } = createWidget("tutorial-widget", "📘 TUTORIAL", 20, 560, 380, `
+    <div id="tutorial-widget-body" class="tutorial-widget-body"></div>
+  `);
+  widget.classList.add("tutorial-widget");
+  setupResize(widget, (_w, h) => {
+    const body = document.getElementById("tutorial-widget-body");
+    if (body) body.style.height = `${Math.max(60, h - 56)}px`;
+  });
+  tutorialWidgetEl = widget;
+}
+
+async function updateTutorialWidget(overrideTip?: string): Promise<void> {
+  const bodyEl = document.getElementById("tutorial-widget-body");
+  if (!bodyEl) return;
+  const step = TUTORIAL_STEPS[tutorialStepIndex];
+  const title = `<div class="tutorial-widget-title">${tutorialStepIndex + 1} / ${TUTORIAL_STEPS.length}: ${step.stage.name}</div>`;
+  bodyEl.innerHTML = title + await renderTutorialMarkdown(overrideTip ?? step.tip);
+}
+
+async function showTutorialTipModal(): Promise<void> {
+  const step = TUTORIAL_STEPS[tutorialStepIndex];
+  document.getElementById("tutorial-modal-title")!.textContent =
+    `📘 チュートリアル ${tutorialStepIndex + 1} / ${TUTORIAL_STEPS.length}: ${step.stage.name}`;
+  const modalBody = document.getElementById("tutorial-modal-body")!;
+  modalBody.innerHTML = await renderTutorialMarkdown(step.tip);
+  document.getElementById("tutorial-modal")!.classList.remove("hidden");
+  updateTutorialWidget();
+
+  const startBtn = document.getElementById("tutorial-start-btn")!;
+  startBtn.textContent = "はじめる →";
+  startBtn.onclick = () => {
+    document.getElementById("tutorial-modal")!.classList.add("hidden");
+    if (step.unlockFunctionKw) devUnlocks = { ...devUnlocks, functionKw: true };
+    deckCards = [...step.deck];
+    startBattle();
+  };
+}
+
+// バトル中にエラーが起きた際、少し待ってから追加のヒントをポップアップ＋常駐ウィジェットに表示する。
+// バトルは中断しない（プレイヤーはそのままコードを直して再RUNできる）。
+async function showTutorialFollowUp(tip: string): Promise<void> {
+  await sleep(1200);
+  document.getElementById("tutorial-modal-title")!.textContent = "📘 ヒント";
+  document.getElementById("tutorial-modal-body")!.innerHTML = await renderTutorialMarkdown(tip);
+  document.getElementById("tutorial-modal")!.classList.remove("hidden");
+  updateTutorialWidget(tip);
+
+  const startBtn = document.getElementById("tutorial-start-btn")!;
+  startBtn.textContent = "わかった";
+  startBtn.onclick = () => {
+    document.getElementById("tutorial-modal")!.classList.add("hidden");
+    startBtn.textContent = "はじめる →";
+  };
+}
+
+function startTutorial(): void {
+  tutorialMode      = true;
+  tutorialStepIndex = 0;
+  activeStages      = TUTORIAL_STEPS.map(s => s.stage);
+  devUnlocks        = { ...DEFAULT_UNLOCKS };
+
+  const char = getCharacter("loopRunner");
+  selectedCharacter = char;
+  PLAYER_MAX_HP     = char.hp;
+  runPlayerHp       = PLAYER_MAX_HP;
+  currentStageIndex = 0;
+
+  hideOverlay();
+  closeRewardModal();
+  clearLog();
+  clearConsoleLog();
+
+  clearAllEditors();
+  addEditor("editor #1", "", 690, 20, "main");
+
+  setTutorialUIVisible(false);
+  buildTutorialWidget();
+  showTutorialTipModal();
+}
+
+function endTutorialAndReturn(): void {
+  tutorialMode = false;
+  activeStages = STAGES;
+  setTutorialUIVisible(true);
+  removeTutorialWidget();
+  clearAllEditors();
+  restoreEditorsFromStorage();
+  showCharSelectScreen();
+}
+
 // ── バトル開始（ステージ切り替えでも呼ばれる） ─────────────────────
 
 function startBattle(): void {
-  const stage = STAGES[currentStageIndex];
+  const stage = activeStages[currentStageIndex];
+  currentIntentIndex = 0;
+  const firstIntent = stage.intentPattern[0] ?? { kind: "attack", value: 6 };
+
   state = {
     player: { hp: runPlayerHp, maxHp: PLAYER_MAX_HP, block: 0 },
     enemy: {
@@ -802,7 +1125,7 @@ function startBattle(): void {
       block:      0,
       vulnerable: 0,
       poison:     0,
-      intent:     { kind: "attack", value: 0 },
+      intent:     { ...firstIntent },
     },
     energy:    MAX_ENERGY,
     maxEnergy: MAX_ENERGY,
@@ -815,15 +1138,21 @@ function startBattle(): void {
     nextTurnExtraEnergy: 0,
     uniqueUsedThisTurn: [],
     costZeroCardIds: [],
+    costReductionMap: {},
     cachedCardId: null,
     characterId: selectedCharacter.id,
+    daemonCost: MAX_DAEMON_COST,
+    maxDaemonCost: MAX_DAEMON_COST,
   };
   deck = new Deck([...deckCards]);
   over = false;
   busy = false;
+  entries.forEach(e => { e.autorun = false; updateAutoBtn(e); });
+  setCode(daemonEditor, "");
+  updateDaemonDisplay();
 
   setEnemyName(stage.isBoss ? `👑 ${stage.name}` : stage.name);
-  setStageLabel(currentStageIndex, TOTAL_STAGES, !!stage.isBoss);
+  setStageLabel(currentStageIndex, totalStages(), !!stage.isBoss);
   setDeckCount(deckCards.length);
   clearLog();
   clearConsoleLog();
@@ -831,71 +1160,51 @@ function startBattle(): void {
   appendLog(`デッキ: ${deckCards.length} 枚`, "sys");
   entries.forEach(e => { e.errorEl.textContent = ""; });
 
-  startPlayerTurn();
-}
-
-function startPlayerTurn(): void {
-  runCount = 0;
-  const stage = STAGES[currentStageIndex];
-  state.player.block       = 0;
-  state.energy             = MAX_ENERGY + state.nextTurnExtraEnergy;
-  state.rebootUsedThisTurn = false;
-  state.comboCount         = 0;
-  state.comboIncrement     = 1;
-  state.asyncAwaitActive   = false;
-  state.costZeroCardIds    = [];
-  state.uniqueUsedThisTurn = [];
-  state.enemy.intent       = chooseIntent(state.turn, stage.intentPattern);
-
-  // Restore cached card
-  if (state.cachedCardId) {
-    deck.hand.push(state.cachedCardId as CardId);
-    if (!state.costZeroCardIds.includes(state.cachedCardId)) {
-      state.costZeroCardIds.push(state.cachedCardId);
-    }
-    state.cachedCardId = null;
-  }
-
-  const extraDraws = state.nextTurnExtraDraws;
-  state.nextTurnExtraDraws  = 0;
-  state.nextTurnExtraEnergy = 0;
-
-  deck.draw(HAND_SIZE + extraDraws);
-
-  clearConsoleLog();
-  appendLog(`─── ターン ${state.turn} ───`, "sys");
+  // 毎ターン開始時に5枚ドロー（1ターン目分をここで実行）
+  deck.draw(HAND_SIZE);
+  appendLog(`─── ターン 1 ───`, "sys");
   render(state, deck);
   restoreButtons();
 }
 
-// ── RUN ────────────────────────────────────────────────────────────
 
-async function onRun(entry: EditorEntry): Promise<void> {
-  if (busy || over || runCount >= 2) return;
-  runCount++;
-  busy = true;
-  setAllRunButtons(false);
-  entry.errorEl.textContent = "";
+// ── AUTORUN ──────────────────────────────────────────────────────────
 
-  const libraryCode = entries
-    .filter(e => e.kind === "library")
-    .map(e => getCode(e.editor))
-    .filter(c => c.trim())
-    .join("\n\n") || undefined;
+function updateAutoBtn(entry: EditorEntry): void {
+  if (!entry.autoBtn) return;
+  entry.autoBtn.classList.toggle("active", entry.autorun);
+  entry.autoBtn.textContent = entry.autorun ? "⏸ AUTO" : "⟳ AUTO";
+}
 
-  const snap   = devUnlocks.deckInfo ? getDeckSnapshot() : undefined;
-  const characterCards = getAllCharacterCards(selectedCharacter);
+function toggleAutorun(entry: EditorEntry): void {
+  entry.autorun = !entry.autorun;
+  updateAutoBtn(entry);
+  if (entry.autorun && !busy && !over) {
+    onRun(entry);
+  }
+}
 
-  const result = await runUserCode(
-    getCode(entry.editor), state, deck.hand, devUnlocks, snap, 1000, libraryCode,
-    deck.drawPile, deck.discardPile, characterCards,
-  );
+// endTurn() 到達（＝enemyTurn アクションが発生）後、コードが最後まで完走したら
+// AUTO が有効な限り同じエディタを自動で再実行し続ける。
+function maybeContinueAutorun(entry: EditorEntry): void {
+  if (entry.autorun && !over) {
+    setTimeout(() => onRun(entry), 250);
+  }
+}
+
+// ── RUN 結果の共通処理（RUNボタン・手動ターン終了ボタン共通） ─────────
+
+async function processRunResult(result: RunResult, entry?: EditorEntry): Promise<void> {
   appendConsoleLog(result.consoleLogs);
+
+  // インテント位置を同期
+  if (result.finalIntentIndex !== undefined) currentIntentIndex = result.finalIntentIndex;
 
   // Sync hand/drawPile/discardPile from worker result
   if (result.finalHand !== undefined) deck.hand = result.finalHand;
   if (result.finalDrawPile !== undefined) deck.drawPile = result.finalDrawPile;
   if (result.finalDiscardPile !== undefined) deck.discardPile = result.finalDiscardPile;
+  if (result.finalDeployedCardIds !== undefined) deck.deployedCards = result.finalDeployedCardIds;
 
   // Handle disposed cards
   if (result.disposedCardIds) {
@@ -905,29 +1214,59 @@ async function onRun(entry: EditorEntry): Promise<void> {
   }
 
   for (const action of result.actions) {
-    const text = applyAction(state, action);
+    if (action.kind === "enemyTurn") {
+      // 敵ターンのアニメーション
+      const text = applyAction(state, action);
+      if (action.poisonDmg > 0) {
+        appendLog(`☠ 毒 ${action.poisonDmg} ダメージ`, "dmg");
+      }
+      const isEnemyHeal = action.intent.kind === "block";
+      appendLog(`─── ターン ${state.turn} ───`, "sys");
+      appendLog(text, isEnemyHeal ? "heal" : "dmg");
+      render(state, deck, getDisabledCards());
+      updateDaemonDisplay();
+      await sleep(300);
+      if (state.player.hp <= 0) break;
+      continue;
+    }
+
+    const text = applyAction(state, action, action.viaDaemon ? "daemon" : "energy");
     const isHeal = action.kind === "heal" || action.kind === "block" ||
                    action.kind === "lrBlock" || action.kind === "reboot" ||
                    action.kind === "patch" || action.kind === "initialize" ||
                    action.kind === "sleep" || action.kind === "incrementalBlock" ||
                    action.kind === "conditionalBlock" || action.kind === "bufferOverflowProtection";
-    appendLog(text, isHeal ? "heal" : "dmg");
+    appendLog(action.viaDaemon ? `🤖 ${text}` : text, isHeal ? "heal" : "dmg");
     render(state, deck, getDisabledCards());
-    await sleep(180);
+    if (action.viaDaemon) updateDaemonDisplay();
+    await sleep(action.viaDaemon ? 60 : 180);
     if (state.enemy.hp <= 0) break;
   }
 
-  if (result.error)     entry.errorEl.textContent = `⚠ ${result.error}`;
-  else if (result.info) appendLog(result.info, "err");
+  if (result.error) {
+    if (entry) {
+      entry.errorEl.textContent = `⚠ ${result.error}`;
+      if (entry.autorun) {
+        entry.autorun = false;
+        updateAutoBtn(entry);
+        appendLog("⚠ エラーのため AUTO を停止しました", "err");
+      }
+    } else {
+      appendLog(`⚠ ${result.error}`, "err");
+    }
+    if (tutorialMode) {
+      const followUp = TUTORIAL_STEPS[tutorialStepIndex].followUp;
+      if (followUp) showTutorialFollowUp(followUp.tip);
+    }
+  } else if (result.info) {
+    appendLog(result.info, "err");
+  }
 
   render(state, deck, getDisabledCards());
-  if (state.enemy.hp <= 0) return finish(true);
 
-  if (result.endTurnCalled) {
-    appendLog("endTurn() が呼ばれました", "sys");
-    busy = false;
-    return onEndTurn();
-  }
+  // 戦闘終了判定
+  if (result.combatResult === "victory" || state.enemy.hp <= 0) return finish(true);
+  if (result.combatResult === "defeat"  || state.player.hp <= 0) return finish(false);
 
   if (result.cyclerCalled !== undefined) {
     const cyclerN = result.cyclerCalled;
@@ -940,15 +1279,15 @@ async function onRun(entry: EditorEntry): Promise<void> {
       appendLog(`cycler: [${names}] を捨てて ${cyclerN}枚 ドロー`, "sys");
       render(state, deck, getDisabledCards());
       restoreButtons();
+      if (entry) maybeContinueAutorun(entry);
     });
     return;
   }
 
   // Recursion: reset uniqueUsedThisTurn and re-run
-  if (result.recursionTriggered) {
+  if (result.recursionTriggered && entry) {
     appendLog("recursion: プログラムを再実行", "sys");
     state.uniqueUsedThisTurn = [];
-    runCount--; // Don't count this as a run
     busy = false;
     await onRun(entry);
     return;
@@ -956,35 +1295,56 @@ async function onRun(entry: EditorEntry): Promise<void> {
 
   busy = false;
   restoreButtons();
+  if (entry && !result.error) maybeContinueAutorun(entry);
 }
 
-// ── ターン終了 ──────────────────────────────────────────────────────
+// ── RUN ────────────────────────────────────────────────────────────
+
+async function onRun(entry: EditorEntry): Promise<void> {
+  if (busy || over) return;
+  busy = true;
+  setAllRunButtons(false);
+  entry.errorEl.textContent = "";
+
+  const libraryCode = entries
+    .filter(e => e.kind === "library")
+    .map(e => getCode(e.editor))
+    .filter(c => c.trim())
+    .join("\n\n") || undefined;
+
+  const snap         = devUnlocks.deckInfo ? getDeckSnapshot() : undefined;
+  const characterCards = getAllCharacterCards(selectedCharacter);
+  const stage        = activeStages[currentStageIndex];
+
+  const allowedFns = tutorialMode ? TUTORIAL_STEPS[tutorialStepIndex].allowedFns : undefined;
+
+  const result = await runUserCode(
+    getCode(entry.editor), state, deck.hand, devUnlocks, snap, 10000, libraryCode,
+    deck.drawPile, deck.discardPile, characterCards,
+    stage.intentPattern, currentIntentIndex,
+    getCode(daemonEditor), [...deck.deployedCards],
+    allowedFns,
+  );
+  await processRunResult(result, entry);
+}
+
+// ── ターン終了（手動ボタン。endTurn() 関数呼び出しと完全に同じ処理を行う） ──
 
 async function onEndTurn(): Promise<void> {
   if (busy || over) return;
   busy = true;
   setAllRunButtons(false);
 
-  if (state.enemy.poison > 0) {
-    state.enemy.hp     = Math.max(0, state.enemy.hp - state.enemy.poison);
-    appendLog(`☠ 毒 ${state.enemy.poison} ダメージ`, "dmg");
-    state.enemy.poison -= 1;
-    render(state, deck, getDisabledCards());
-    await sleep(300);
-    if (state.enemy.hp <= 0) return finish(true);
-  }
+  const characterCards = getAllCharacterCards(selectedCharacter);
+  const stage          = activeStages[currentStageIndex];
 
-  state.enemy.vulnerable = 0;
-  deck.discardHand();
-  appendLog(enemyAct(state), "dmg");
-  render(state, deck);
-  await sleep(300);
-
-  if (state.player.hp <= 0) return finish(false);
-
-  state.turn += 1;
-  busy = false;
-  startPlayerTurn();
+  const result = await runUserCode(
+    "endTurn();", state, deck.hand, devUnlocks, undefined, 10000, undefined,
+    deck.drawPile, deck.discardPile, characterCards,
+    stage.intentPattern, currentIntentIndex,
+    getCode(daemonEditor), [...deck.deployedCards],
+  );
+  await processRunResult(result);
 }
 
 // ── バトル終了 ──────────────────────────────────────────────────────
@@ -996,12 +1356,20 @@ async function finish(win: boolean): Promise<void> {
   render(state, deck);
 
   if (!win) {
+    if (tutorialMode) {
+      appendLog("💀 やられてしまった…もう一度挑戦しよう", "sys");
+      showOverlay("💀 もう一度！");
+      await sleep(1200);
+      hideOverlay();
+      startBattle();
+      return;
+    }
     appendLog("💀 敗北...", "sys");
     showOverlay("💀 GAME OVER");
     return;
   }
 
-  appendLog(`✅ ${STAGES[currentStageIndex].name} を倒した！`, "sys");
+  appendLog(`✅ ${activeStages[currentStageIndex].name} を倒した！`, "sys");
 
   const healed = Math.floor(PLAYER_MAX_HP * HEAL_RATE);
   runPlayerHp  = Math.min(PLAYER_MAX_HP, state.player.hp + healed);
@@ -1010,7 +1378,15 @@ async function finish(win: boolean): Promise<void> {
   // Restore disposed cards on stage clear
   deck.restoreDisposedCards();
 
-  if (currentStageIndex >= TOTAL_STAGES - 1) {
+  if (currentStageIndex >= totalStages() - 1) {
+    if (tutorialMode) {
+      appendLog("🎓 チュートリアル完了！", "sys");
+      showOverlay("🎓 チュートリアル完了！");
+      await sleep(1800);
+      hideOverlay();
+      endTutorialAndReturn();
+      return;
+    }
     appendLog("🏆 全ステージクリア！", "sys");
     showOverlay("🏆 CLEAR!");
     return;
@@ -1018,6 +1394,14 @@ async function finish(win: boolean): Promise<void> {
 
   currentStageIndex++;
   await sleep(600);
+
+  if (tutorialMode) {
+    // チュートリアルはランダム報酬なし。各ステージで必要なカードだけを次のtipで指定する。
+    tutorialStepIndex++;
+    showTutorialTipModal();
+    return;
+  }
+
   showRewardScreen(selectedCharacter, (picked) => {
     if (picked) {
       deckCards.push(picked);
@@ -1060,7 +1444,9 @@ function buildReferenceModal(): void {
       items: [
         { sig: "enemyHp()",     cost: "0", desc: "敵の現在 HP を返す",     example: "if (enemyHp() <= 12) execute();" },
         { sig: "myHp()",        cost: "0", desc: "自分の現在 HP を返す",   example: "if (myHp() < 15) patch();" },
-        { sig: "energy()",      cost: "0", desc: "残りエネルギーを返す",   example: "attack();" },
+        { sig: "myBlock()",     cost: "0", desc: "自分の現在ブロック量を返す", example: "if (myBlock() < 5) block();" },
+        { sig: "mainClock()",   cost: "0", desc: "残り Main Clock を返す", example: "while (mainClock() !== 0) attack();" },
+        { sig: "daemonCost()",  cost: "0", desc: "残り Daemon Cost を返す（Daemon内で使用）", example: "if (daemonCost() >= 1) attack();" },
         { sig: "enemyBlock()",  cost: "0", desc: "敵の現在ブロック量を返す", example: "if (enemyBlock() > 0) ping();" },
         { sig: "enemyIntent()", cost: "0", desc: "敵の次の行動 {kind, value}", example: 'if (enemyIntent().kind === "attack") block();' },
       ],
@@ -1153,7 +1539,11 @@ function buildReferenceModal(): void {
 
 document.getElementById("home-btn")!.addEventListener("click", () => {
   if (confirm("ゲームを終了してメインメニューに戻りますか？")) {
-    showMenuScreen();
+    if (tutorialMode) {
+      endTutorialAndReturn();
+    } else {
+      showMenuScreen();
+    }
   }
 });
 
@@ -1181,29 +1571,47 @@ document.getElementById("add-lib-btn")!.addEventListener("click", () => {
 });
 
 document.getElementById("end-turn-btn")!.addEventListener("click", onEndTurn);
-document.getElementById("restart-btn")!.addEventListener("click",  () => showMenuScreen());
+document.getElementById("restart-btn")!.addEventListener("click", () => {
+  if (tutorialMode) endTutorialAndReturn();
+  else showMenuScreen();
+});
 
 // ── 起動 ────────────────────────────────────────────────────────────
 
 buildPileModal();
 buildCyclerModal();
 buildRewardModal();
+buildTutorialModal();
 buildReferenceModal();
 buildEnemyWidget();
 buildPlayerWidget();
 buildLogWidget();
 buildDeckWidget();
 buildConsoleWidget();
+buildDaemonWidget();
 
 // エディタ復元 or デフォルト
-const savedEditors = loadEditorState();
-if (savedEditors && savedEditors.length > 0) {
-  for (const s of savedEditors) {
-    addEditor(s.title, s.code, s.x, s.y, s.kind, s.h);
+function clearAllEditors(): void {
+  for (const e of [...entries]) {
+    e.editor.dispose();
+    e.widget.remove();
+    const idx = entries.indexOf(e);
+    if (idx !== -1) entries.splice(idx, 1);
   }
-} else {
-  addEditor("editor #1", INITIAL_CODE, 690, 20, "main");
 }
+
+function restoreEditorsFromStorage(): void {
+  const savedEditors = loadEditorState();
+  if (savedEditors && savedEditors.length > 0) {
+    for (const s of savedEditors) {
+      addEditor(s.title, s.code, s.x, s.y, s.kind, s.h);
+    }
+  } else {
+    addEditor("editor #1", INITIAL_CODE, 690, 20, "main");
+  }
+}
+
+restoreEditorsFromStorage();
 
 updateCanvas();
 buildMenuScreen();

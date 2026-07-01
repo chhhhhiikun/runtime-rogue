@@ -1,6 +1,6 @@
-import type { CombatState } from "./state";
+import type { CombatState, EnemyIntent } from "./state";
 
-export type Action =
+export type ActionCore =
   // Legacy actions
   | { kind: "attack";    amount: number; cost: number }
   | { kind: "block";     amount: number; cost: number }
@@ -16,7 +16,7 @@ export type Action =
   | { kind: "reboot";    cost: number }
   | { kind: "combo";     n: number; k: number; cost: number }
   // Loop Runner actions
-  | { kind: "lrAttack"; cost: number }
+  | { kind: "lrAttack"; cost: number; comboCount: number }
   | { kind: "lrBlock"; cost: number }
   | { kind: "quickScan"; cost: number }
   | { kind: "initialize"; cost: number }
@@ -40,7 +40,12 @@ export type Action =
   | { kind: "asyncAwait"; cost: number }
   | { kind: "stackOverflow"; cost: number }
   | { kind: "lrExecute"; cost: number; comboCount: number }
-  | { kind: "compilerOptimization"; cost: number };
+  | { kind: "compilerOptimization"; cost: number }
+  // ターン境界（敵ターン処理）
+  | { kind: "enemyTurn"; intent: EnemyIntent; nextIntent: EnemyIntent; label: string; poisonDmg: number };
+
+// viaDaemon: Daemon による自動実行由来のアクションかどうか（ログ表示・アニメーション分岐用）
+export type Action = ActionCore & { viaDaemon?: boolean };
 
 function damageEnemy(s: CombatState, raw: number): number {
   let dmg = raw;
@@ -57,8 +62,48 @@ function vulnDmg(s: CombatState, base: number): number {
   return s.enemy.vulnerable > 0 ? Math.floor(base * 1.5) : base;
 }
 
-export function applyAction(s: CombatState, a: Action): string {
-  s.energy -= a.cost;
+export function applyAction(
+  s: CombatState,
+  a: Action,
+  costSource: "energy" | "daemon" = "energy",
+): string {
+  // enemyTurn はエネルギーを消費しない（ターン境界処理）
+  if (a.kind === "enemyTurn") {
+    if (a.poisonDmg > 0) {
+      s.enemy.hp = Math.max(0, s.enemy.hp - a.poisonDmg);
+    }
+    s.enemy.vulnerable = 0;
+    if (a.intent.kind === "block") {
+      s.enemy.block += a.intent.value;
+    } else {
+      let dmg = a.intent.value;
+      if (s.player.block > 0) {
+        const absorbed = Math.min(s.player.block, dmg);
+        s.player.block -= absorbed;
+        dmg -= absorbed;
+      }
+      s.player.hp = Math.max(0, s.player.hp - dmg);
+    }
+    s.player.block       = 0;
+    s.energy             = s.maxEnergy + s.nextTurnExtraEnergy;
+    s.nextTurnExtraEnergy = 0;
+    s.comboCount         = 0;
+    s.comboIncrement     = 1;
+    s.asyncAwaitActive   = false;
+    s.rebootUsedThisTurn = false;
+    s.uniqueUsedThisTurn = [];
+    s.costZeroCardIds    = [];
+    s.costReductionMap   = {};
+    s.turn++;
+    s.enemy.intent = { ...a.nextIntent };
+    return a.label;
+  }
+
+  if (costSource === "daemon") {
+    s.daemonCost -= a.cost;
+  } else {
+    s.energy -= a.cost;
+  }
 
   switch (a.kind) {
     case "attack": {
@@ -131,9 +176,10 @@ export function applyAction(s: CombatState, a: Action): string {
 
     // ── Loop Runner ──────────────────────────────────────────────
     case "lrAttack": {
-      const raw   = vulnDmg(s, 6);
+      const dmg  = 3 + Math.floor(a.comboCount / 3);
+      const raw   = vulnDmg(s, dmg);
       const dealt = damageEnemy(s, raw);
-      return `attack: 敵に ${dealt} ダメージ`;
+      return `attack: 敵に ${dealt} ダメージ (combo:${a.comboCount})`;
     }
     case "lrBlock": {
       s.player.block += 5;
@@ -238,5 +284,6 @@ export function applyAction(s: CombatState, a: Action): string {
     case "compilerOptimization": {
       return `compilerOptimization: 3枚ドロー、通常カードのコスト0`;
     }
+
   }
 }

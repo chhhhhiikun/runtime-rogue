@@ -47,6 +47,28 @@ monaco.editor.defineTheme("runtime-rogue-dark", {
   },
 });
 
+// ── API 型宣言（Monaco の型推論を助ける） ──────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(monaco.languages as any).typescript.javascriptDefaults.addExtraLib(`
+declare function enemyHp(): number;
+declare function myHp(): number;
+declare function myBlock(): number;
+declare function mainClock(): number;
+declare function daemonCost(): number;
+declare function enemyBlock(): number;
+declare function enemyIntent(): { kind: "attack" | "block"; value: number };
+declare function comboCount(): number;
+declare function isUsable(fn: string): boolean;
+declare function myHand(): string[];
+declare function myDeck(): string[];
+declare function myDrawPile(): string[];
+declare function myDiscard(): string[];
+declare function endTurn(): void;
+declare function attack(): void;
+declare function block(): void;
+`, "runtime-rogue-api.d.ts");
+
 // ── 補完プロバイダ ──────────────────────────────────────────────────
 
 let _getHand: () => CardId[] = () => [];
@@ -58,9 +80,13 @@ let _providerRegistered = false;
 const READ_ITEMS: Array<{ label: string; insert: string; detail: string; doc: string }> = [
   { label: "enemyHp",     insert: "enemyHp()",     detail: "() → number",       doc: "敵の現在HP" },
   { label: "myHp",        insert: "myHp()",        detail: "() → number",       doc: "自分の現在HP" },
-  { label: "energy",      insert: "energy()",      detail: "() → number",       doc: "残りエネルギー" },
+  { label: "myBlock",     insert: "myBlock()",     detail: "() → number",       doc: "自分の現在ブロック量" },
+  { label: "mainClock",   insert: "mainClock()",   detail: "() → number",       doc: "残りMain Clock" },
+  { label: "daemonCost",  insert: "daemonCost()",  detail: "() → number",       doc: "残りDaemon Cost" },
   { label: "enemyBlock",  insert: "enemyBlock()",  detail: "() → number",       doc: "敵の現在ブロック量" },
   { label: "enemyIntent", insert: "enemyIntent()", detail: "() → {kind,value}", doc: "敵の次の行動" },
+  { label: "comboCount",  insert: "comboCount()",  detail: "() → number",       doc: "現在のコンボカウンター値" },
+  { label: "isUsable",    insert: "isUsable(\"${1:attack}\")", detail: "(fn: string) → boolean", doc: "そのカードが今のターン使用可能かどうか（Unique使用済み等はfalse）" },
 ];
 
 const DECK_INFO_ITEMS: Array<{ label: string; insert: string; detail: string; doc: string }> = [
@@ -92,14 +118,19 @@ function ensureProvider(): void {
       const unlocks = _getUnlocks();
       const hand    = _getHand();
 
-      const seen = new Set<string>();
+      const seenFn = new Set<string>();
       const cardItems = hand
-        .filter(id => { if (seen.has(id)) return false; seen.add(id); return true; })
+        .filter(id => {
+          const fn = CARDS[id]?.fn ?? id;
+          if (seenFn.has(fn)) return false;
+          seenFn.add(fn);
+          return true;
+        })
         .map((id, i) => {
           const def = CARDS[id];
           const insertText = def.signature.replace(/\(([^)]+)\)/, "(${1:$1})");
           return {
-            label:           id,
+            label:           def.fn,  // lrAttack→"attack" など fn名で表示
             kind:            monaco.languages.CompletionItemKind.Function,
             detail:          def.signature,
             documentation:   def.description,
@@ -201,4 +232,10 @@ export function setCode(editor: MonacoEditor, code: string): void {
 export function insertText(editor: MonacoEditor, text: string): void {
   editor.focus();
   editor.trigger("runtime-rogue", "type", { text });
+}
+
+// Monaco のトークナイザでコード文字列をシンタックスハイライト済みHTMLに変換する
+// （チュートリアルウィンドウ等、エディタ以外の場所でコード例を表示するために使う）
+export async function colorizeCode(code: string, language = "javascript"): Promise<string> {
+  return monaco.editor.colorize(code, language, {});
 }

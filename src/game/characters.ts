@@ -17,7 +17,7 @@ export const CHARACTERS: CharacterDef[] = [
     name: "Loop Runner",
     emoji: "🏃",
     hp: 35,
-    starterDeck: ["lrAttack", "lrBlock", "quickScan"],
+    starterDeck: ["lrAttack", "lrAttack", "lrBlock", "lrBlock", "quickScan"],
     cardPool: {
       common: ["initialize", "noop", "shift", "sleep", "forceQuit", "overClock", "ping", "incrementalAttack", "refactoring", "patch"],
       uncommon: ["incrementalBlock", "conditionalBlock", "bufferOverflowProtection", "asyncDraw", "caching", "multiThreading", "garbageCollection"],

@@ -16,9 +16,19 @@ export class Deck {
   hand: CardId[] = [];
   discardPile: CardId[] = [];
   disposedCards: CardId[] = [];
+  deployedCards: CardId[] = []; // Daemon へデプロイ済み。戦闘終了まで手札/デッキ/捨て札に戻らない
 
   constructor(starter: CardId[]) {
     this.drawPile = shuffle(starter);
+  }
+
+  // 手札から1枚を選び、Daemonへ永続的にデプロイする（不可逆）
+  deploy(id: CardId): boolean {
+    const idx = this.hand.indexOf(id);
+    if (idx === -1) return false;
+    this.hand.splice(idx, 1);
+    this.deployedCards.push(id);
+    return true;
   }
 
   // n 枚ドロー。山札が尽きたら捨て札をシャッフルして補充。
@@ -68,6 +78,12 @@ export class Deck {
     const discardIdx = this.discardPile.indexOf(id);
     if (discardIdx !== -1) {
       this.discardPile.splice(discardIdx, 1);
+      this.disposedCards.push(id);
+      return;
+    }
+    const deployedIdx = this.deployedCards.indexOf(id);
+    if (deployedIdx !== -1) {
+      this.deployedCards.splice(deployedIdx, 1);
       this.disposedCards.push(id);
     }
   }

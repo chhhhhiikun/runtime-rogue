@@ -1,6 +1,6 @@
-import type { CombatState } from "../game/state";
+import type { CombatState, EnemyIntent } from "../game/state";
 import { applyAction, type Action } from "../game/actions";
-import { CARDS, type CardId } from "../game/cards";
+import { CARDS, HAND_SIZE, getCardBaseCost, type CardId } from "../game/cards";
 
 export interface UnlockFunctions {
   deckInfo: boolean;   // myDeck() myHand() myDrawPile() myDiscard()
@@ -26,6 +26,11 @@ export interface RunRequest {
   drawPile?: CardId[];
   discardPile?: CardId[];
   characterCards?: CardId[];
+  intentPattern?: EnemyIntent[];
+  intentIndex?: number;
+  daemonCode?: string;
+  deployedCardIds?: CardId[];
+  allowedFns?: string[]; // 指定時、この名前の関数のみサンドボックスに公開する（チュートリアル用）
 }
 
 export interface RunResult {
@@ -41,15 +46,30 @@ export interface RunResult {
   finalDiscardPile?: CardId[];
   recursionTriggered?: boolean;
   disposedCardIds?: CardId[];
+  combatResult?: "victory" | "defeat";
+  finalIntentIndex?: number;
+  finalDeployedCardIds?: CardId[];
 }
 
 class OutOfEnergy extends Error {}
+class DaemonCostInsufficientException extends Error {}
 class EndTurnSignal extends Error {}
 class CyclerSignal extends Error {
   constructor(public readonly n: number) { super(); }
 }
 class ForceQuitSignal extends Error {}
 class RecursionSignal extends Error {}
+class CombatEndSignal extends Error {
+  constructor(public readonly result: "victory" | "defeat") { super(); }
+}
+
+// 静的解析（書かれた回数のカウント）でコメント内の記述を除外するための簡易コメント除去。
+// 文字列リテラル内の // や /* は考慮しない簡易実装。
+function stripComments(code: string): string {
+  return code
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "");
+}
 
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
@@ -60,66 +80,30 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-function getCardCost(id: CardId): number {
-  switch (id) {
-    // Legacy
-    case "attack": return 0; // dynamic
-    case "block": return 0;  // dynamic
-    case "heal": return 0;   // dynamic
-    case "execute": return 3;
-    case "vulnerable": return 2;
-    case "poison": return 0; // dynamic
-    case "pierce": return 0; // dynamic
-    case "shatter": return 2;
-    case "drain": return 0;  // dynamic
-    case "nullify": return 3;
-    case "overload": return 0; // dynamic
-    case "reboot": return 0;
-    case "combo": return 0;  // dynamic
-    case "debug": return 0;
-    case "cycler": return 0;
-    // LR Starter
-    case "lrAttack": return 1;
-    case "lrBlock": return 1;
-    case "quickScan": return 1;
-    // LR Common
-    case "initialize": return 1;
-    case "noop": return 0;
-    case "shift": return 0;
-    case "sleep": return 1;
-    case "forceQuit": return 1;
-    case "overClock": return 0;
-    case "ping": return 1;
-    case "incrementalAttack": return 2;
-    case "refactoring": return 1;
-    case "patch": return 0;
-    // LR Uncommon
-    case "incrementalBlock": return 2;
-    case "conditionalBlock": return 1;
-    case "bufferOverflowProtection": return 1;
-    case "asyncDraw": return 1;
-    case "caching": return 0;
-    case "multiThreading": return 2;
-    case "garbageCollection": return 1;
-    // LR Rare
-    case "recursion": return 3;
-    case "asyncAwait": return 2;
-    case "stackOverflow": return 1;
-    case "lrExecute": return 3;
-    case "compilerOptimization": return 2;
-  }
-}
-
 function run(req: RunRequest): RunResult {
   const state: CombatState = req.state;
   const actions: Action[]  = [];
   const consoleLogs: string[] = [];
   const disposedCardIds: CardId[] = [];
 
+  // intentPattern for endTurn() processing
+  const intentPattern: EnemyIntent[] = req.intentPattern ?? [];
+  let intentIdx: number = req.intentIndex ?? 0;
+
   // Runtime deck state
   let runtimeHand: CardId[]        = [...req.hand];
   let runtimeDrawPile: CardId[]    = req.drawPile ? [...req.drawPile] : [];
   let runtimeDiscardPile: CardId[] = req.discardPile ? [...req.discardPile] : [];
+
+  // Daemon: デプロイ済みカード（このターン以降 Main Thread の手札には戻らない）
+  const deployedCardIds: CardId[] = req.deployedCardIds ? [...req.deployedCardIds] : [];
+
+  // 現在どちらのスレッドとして実行中か（コスト消費元・使用可否チェックの分岐に使う）
+  let execMode: "main" | "daemon" = "main";
+
+  // Daemon が endTurn() を呼び、それがまた Daemon を呼ぶ…という再帰の深さ
+  let daemonChainDepth = 0;
+  const DAEMON_RECURSION_LIMIT = 50;
 
   // Cost reductions (for refactoring)
   const costReductions: Record<string, number> = {};
@@ -134,30 +118,27 @@ function run(req: RunRequest): RunResult {
       error: "「アロー関数（=>）」はまだアンロックされていません" };
   }
 
-  // ── 静的解析: Unique カードのみチェック ─────────────────────────
-  const codeForStaticCheck = req.prefixCode
+  // ── 静的解析: 手札の枚数を超えて関数名が書かれていないかチェック ──
+  // 同じ関数を手札の枚数より多く「書く」ことはできない（ループの中で1回書くのはOK）。
+  // Unique属性のカードは実質的に手札1枚分の制限として、この仕組みに自然に含まれる。
+  const codeForStaticCheck = stripComments(req.prefixCode
     ? `${req.prefixCode}\n\n${req.code}`
-    : req.code;
+    : req.code);
 
-  // Unique カードのfn名 → max 1 write
-  const uniqueFns = new Set<string>();
+  const handFnCounts = new Map<string, number>();
   for (const id of req.hand) {
     const def = CARDS[id];
-    if (def && def.attributes.includes("unique")) {
-      uniqueFns.add(def.fn);
-    }
+    if (!def) continue;
+    handFnCounts.set(def.fn, (handFnCounts.get(def.fn) ?? 0) + 1);
   }
-  // Legacy single-use
-  if (req.hand.includes("reboot")) uniqueFns.add("reboot");
-  if (req.hand.includes("cycler")) uniqueFns.add("cycler");
 
-  for (const fnName of uniqueFns) {
-    const regex  = new RegExp(`\\b${fnName}\\s*\\(`, "g");
+  for (const [fnName, count] of handFnCounts) {
+    const regex   = new RegExp(`\\b${fnName}\\s*\\(`, "g");
     const written = (codeForStaticCheck.match(regex) ?? []).length;
-    if (written > 1) {
+    if (written > count) {
       return {
         actions: [], finalState: state, consoleLogs,
-        error: `「${fnName}」は1ターンに1回しかコードに書けません（${written}回書かれています）`,
+        error: `「${fnName}」は手札に${count}枚しかないため、${count}回までしかコードに書けません（${written}回書かれています）`,
       };
     }
   }
@@ -165,7 +146,7 @@ function run(req: RunRequest): RunResult {
   // ── ヘルパ ──────────────────────────────────────────────────────
   const effectiveCost = (id: CardId, baseCost: number): number => {
     if (state.costZeroCardIds.includes(id)) return 0;
-    const reduction = costReductions[id] ?? 0;
+    const reduction = (state.costReductionMap[id] ?? 0) + (costReductions[id] ?? 0);
     return Math.max(0, baseCost - reduction);
   };
 
@@ -181,15 +162,26 @@ function run(req: RunRequest): RunResult {
     }
   };
 
-  const record = (a: Action, label: string) => {
+  const record = (a: Extract<Action, { cost: number }>, label: string) => {
     const cost = a.cost;
-    if (cost > state.energy) {
-      throw new OutOfEnergy(
-        `エネルギー不足: ${label} には ${cost} 必要ですが残り ${state.energy} です`,
-      );
+    if (execMode === "daemon") {
+      if (cost > state.daemonCost) {
+        throw new DaemonCostInsufficientException(
+          `Daemon Cost不足: ${label} には ${cost} 必要ですが残り ${state.daemonCost} です`,
+        );
+      }
+      const daemonAction = { ...a, viaDaemon: true };
+      applyAction(state, daemonAction, "daemon");
+      actions.push(daemonAction);
+    } else {
+      if (cost > state.energy) {
+        throw new OutOfEnergy(
+          `エネルギー不足: ${label} には ${cost} 必要ですが残り ${state.energy} です`,
+        );
+      }
+      applyAction(state, a);
+      actions.push(a);
     }
-    applyAction(state, a);
-    actions.push(a);
   };
 
   const checkUnique = (id: CardId): void => {
@@ -202,16 +194,21 @@ function run(req: RunRequest): RunResult {
     state.uniqueUsedThisTurn.push(id);
   };
 
+  const availableSource = (): CardId[] => (execMode === "daemon" ? deployedCardIds : runtimeHand);
+
   const checkInHand = (id: CardId): void => {
-    if (!runtimeHand.includes(id)) {
+    if (!availableSource().includes(id)) {
       const def = CARDS[id];
-      throw new Error(`「${def?.fn ?? id}」は手札にありません`);
+      const place = execMode === "daemon" ? "Daemonにデプロイされて" : "手札にあり";
+      throw new Error(`「${def?.fn ?? id}」は${place}ません`);
     }
   };
 
   const disposeCard = (id: CardId): void => {
     const idx = runtimeHand.indexOf(id);
     if (idx !== -1) runtimeHand.splice(idx, 1);
+    const depIdx = deployedCardIds.indexOf(id);
+    if (depIdx !== -1) deployedCardIds.splice(depIdx, 1);
     disposedCardIds.push(id);
   };
 
@@ -271,8 +268,8 @@ function run(req: RunRequest): RunResult {
       addCombo();
     },
     execute: () => {
-      // Could be legacy execute or lrExecute - check which is in hand
-      if (runtimeHand.includes("lrExecute")) {
+      // Could be legacy execute or lrExecute - check which is available
+      if (availableSource().includes("lrExecute")) {
         checkInHand("lrExecute");
         checkUnique("lrExecute");
         const cost = effectiveCost("lrExecute", 3);
@@ -414,7 +411,7 @@ function run(req: RunRequest): RunResult {
       // Find top 2 highest cost cards in hand
       const handCosts = runtimeHand
         .filter(id => id !== "refactoring")
-        .map(id => ({ id, cost: getCardCost(id) }))
+        .map(id => ({ id, cost: getCardBaseCost(id) }))
         .sort((a, b) => b.cost - a.cost);
       const toReduce = handCosts.slice(0, 2);
       for (const { id } of toReduce) {
@@ -470,7 +467,7 @@ function run(req: RunRequest): RunResult {
       // Find highest cost card in hand (excluding caching itself)
       const candidates = runtimeHand
         .filter(id => id !== "caching")
-        .map(id => ({ id, cost: getCardCost(id) }))
+        .map(id => ({ id, cost: getCardBaseCost(id) }))
         .sort((a, b) => b.cost - a.cost);
       if (candidates.length > 0) {
         state.cachedCardId = candidates[0].id;
@@ -536,11 +533,11 @@ function run(req: RunRequest): RunResult {
       record({ kind: "compilerOptimization", cost }, "compilerOptimization()");
       addCombo();
       drawCards(3);
-      // Add all non-unique cards currently in hand to costZeroCardIds
+      // 通常カード（属性なし）のコストを -1（min 0）にする
       for (const id of runtimeHand) {
         const def = CARDS[id];
-        if (def && def.attributes.length === 0 && !state.costZeroCardIds.includes(id)) {
-          state.costZeroCardIds.push(id);
+        if (def && def.attributes.length === 0) {
+          state.costReductionMap[id] = (state.costReductionMap[id] ?? 0) + 1;
         }
       }
     },
@@ -548,17 +545,15 @@ function run(req: RunRequest): RunResult {
 
   // LR attack/block overrides (no-arg versions)
   const lrAttackFn = (): void => {
-    if (runtimeHand.includes("lrAttack")) {
+    if (availableSource().includes("lrAttack")) {
       checkInHand("lrAttack");
       const cost = effectiveCost("lrAttack", 1);
-      const baseDmg = 6;
-      const dmg = state.asyncAwaitActive ? baseDmg + state.comboCount : baseDmg;
-      // We store the asyncAwait bonus in the action via lrAttack kind
-      record({ kind: "lrAttack", cost }, "attack()");
-      // Apply asyncAwait bonus manually since action already applied base damage
-      if (state.asyncAwaitActive && dmg > baseDmg) {
-        const bonus = dmg - baseDmg;
-        const raw = state.enemy.vulnerable > 0 ? Math.floor(bonus * 1.5) : bonus;
+      const comboAtUse = state.comboCount;
+      // asyncAwait bonus: +comboCount additional damage
+      const asyncBonus = state.asyncAwaitActive ? comboAtUse : 0;
+      record({ kind: "lrAttack", cost, comboCount: comboAtUse }, "attack()");
+      if (asyncBonus > 0) {
+        const raw = state.enemy.vulnerable > 0 ? Math.floor(asyncBonus * 1.5) : asyncBonus;
         let rem = raw;
         if (state.enemy.block > 0) {
           const absorbed = Math.min(state.enemy.block, rem);
@@ -574,7 +569,7 @@ function run(req: RunRequest): RunResult {
   };
 
   const lrBlockFn = (): void => {
-    if (runtimeHand.includes("lrBlock")) {
+    if (availableSource().includes("lrBlock")) {
       checkInHand("lrBlock");
       const cost = effectiveCost("lrBlock", 1);
       record({ kind: "lrBlock", cost }, "block()");
@@ -584,25 +579,197 @@ function run(req: RunRequest): RunResult {
     }
   };
 
+  const toFnNames = (ids: CardId[]) => ids.map(id => CARDS[id]?.fn ?? id);
+
   const readApi: Record<string, () => unknown> = {
     enemyHp:     () => state.enemy.hp,
     myHp:        () => state.player.hp,
-    energy:      () => state.energy,
+    myBlock:     () => state.player.block,
+    mainClock:   () => state.energy,
     enemyBlock:  () => state.enemy.block,
     enemyIntent: () => ({ ...state.enemy.intent }),
+    comboCount:  () => state.comboCount,
+    daemonCost:  () => state.daemonCost,
   };
 
   if (req.unlocks.deckInfo && req.deckSnapshot) {
     const snap = req.deckSnapshot;
-    readApi["myDeck"]      = () => [...snap.full];
-    readApi["myHand"]      = () => [...runtimeHand];
-    readApi["myDrawPile"]  = () => [...runtimeDrawPile];
-    readApi["myDiscard"]   = () => [...runtimeDiscardPile];
+    readApi["myDeck"]      = () => toFnNames([...snap.full]);
+    readApi["myHand"]      = () => toFnNames([...runtimeHand]);
+    readApi["myDrawPile"]  = () => toFnNames([...runtimeDrawPile]);
+    readApi["myDiscard"]   = () => toFnNames([...runtimeDiscardPile]);
   }
 
-  if (req.unlocks.endTurn) {
+  // endTurn() は常にアンロック済み。intentPattern が渡されている場合は
+  // 敵ターン処理をワーカー内で完結させ、なければ従来の EndTurnSignal を投げる。
+  if (intentPattern.length > 0) {
+    readApi["endTurn"] = (): void => {
+      // 敵が既に死んでいれば即勝利
+      if (state.enemy.hp <= 0) throw new CombatEndSignal("victory");
+
+      // 毒ダメージ
+      const poisonDmg = state.enemy.poison > 0 ? state.enemy.poison : 0;
+
+      // 次のインテントを決定
+      const nextIdx = (intentIdx + 1) % intentPattern.length;
+      const nextIntent: EnemyIntent = { ...intentPattern[nextIdx] };
+
+      // enemyTurn アクションを記録（main.ts側でアニメーション再生用）
+      const currentIntent = { ...state.enemy.intent };
+      const attackLabel = currentIntent.kind === "block"
+        ? `敵はブロック +${currentIntent.value} を得た`
+        : `敵の攻撃！ あなたに ${currentIntent.value} ダメージ`;
+      actions.push({
+        kind: "enemyTurn",
+        intent: currentIntent,
+        nextIntent,
+        label: attackLabel,
+        poisonDmg,
+      });
+
+      // ワーカー内 state にも同じ変更を適用（以降のカード判定で正確な状態を使うため）
+      if (poisonDmg > 0) {
+        state.enemy.hp = Math.max(0, state.enemy.hp - poisonDmg);
+        state.enemy.poison = Math.max(0, state.enemy.poison - 1);
+      }
+      state.enemy.vulnerable = 0;
+      if (currentIntent.kind === "block") {
+        state.enemy.block += currentIntent.value;
+      } else {
+        let dmg = currentIntent.value;
+        if (state.player.block > 0) {
+          const absorbed = Math.min(state.player.block, dmg);
+          state.player.block -= absorbed;
+          dmg -= absorbed;
+        }
+        state.player.hp = Math.max(0, state.player.hp - dmg);
+      }
+
+      // 次ターン準備（Main Clock・コンボ等）
+      state.player.block       = 0;
+      state.energy             = state.maxEnergy + state.nextTurnExtraEnergy;
+      state.nextTurnExtraEnergy = 0;
+      state.comboCount         = 0;
+      state.comboIncrement     = 1;
+      state.asyncAwaitActive   = false;
+      state.rebootUsedThisTurn = false;
+      state.uniqueUsedThisTurn = [];
+      state.costZeroCardIds    = [];
+      state.costReductionMap   = {};
+      state.turn++;
+      intentIdx = nextIdx;
+      state.enemy.intent = nextIntent;
+
+      // 手札を全捨て札 → 5枚(+ボーナス)ドロー
+      runtimeDiscardPile.push(...runtimeHand);
+      runtimeHand = [];
+      const drawCount = HAND_SIZE + state.nextTurnExtraDraws;
+      state.nextTurnExtraDraws = 0;
+      drawCards(drawCount);
+
+      // Daemon Cost 回復 → Daemon自動実行
+      runDaemonOnce();
+
+      // 勝敗判定
+      if (state.enemy.hp <= 0) throw new CombatEndSignal("victory");
+      if (state.player.hp <= 0) throw new CombatEndSignal("defeat");
+    };
+  } else {
+    // intentPattern 未設定時は従来通り EndTurnSignal
     readApi["endTurn"] = () => { throw new EndTurnSignal(); };
   }
+
+  // isUsable(fnName): カードが今のターン使用可能かどうか
+  const isUsableFn = (fn: unknown): boolean => {
+    const fnName = String(fn);
+    const id = availableSource().find(cid => CARDS[cid]?.fn === fnName);
+    if (!id) return false;
+    const def = CARDS[id];
+    if (!def) return false;
+    if (def.attributes.includes("unique") && state.uniqueUsedThisTurn.includes(id)) return false;
+    return true;
+  };
+
+  // Daemon: 毎ターン開始時、手札ドロー後に自動実行される
+  const runDaemonOnce = (): void => {
+    state.daemonCost = state.maxDaemonCost;
+    if (!req.daemonCode || !req.daemonCode.trim() || deployedCardIds.length === 0) return;
+
+    if (daemonChainDepth >= DAEMON_RECURSION_LIMIT) {
+      consoleLogs.push(
+        `[DAEMON] ⚠ StackOverflow: endTurn() の再帰的呼び出しが上限(${DAEMON_RECURSION_LIMIT}回)に達しました`,
+      );
+      return;
+    }
+
+    // 静的解析: デプロイ済み枚数を超えて関数名が書かれていないかチェック
+    // （ループで呼び出すのは1回書いたことになる。連呼するには while(true) 等が必要）
+    const deployedCounts = new Map<string, number>();
+    for (const id of deployedCardIds) {
+      const def = CARDS[id];
+      if (!def) continue;
+      deployedCounts.set(def.fn, (deployedCounts.get(def.fn) ?? 0) + 1);
+    }
+    const daemonCodeForCheck = stripComments(req.daemonCode);
+    for (const [fnName, count] of deployedCounts) {
+      const regex   = new RegExp(`\\b${fnName}\\s*\\(`, "g");
+      const written = (daemonCodeForCheck.match(regex) ?? []).length;
+      if (written > count) {
+        consoleLogs.push(
+          `[DAEMON] ⚠ 「${fnName}」はDaemonに${count}枚しかデプロイされていないため、${count}回までしかコードに書けません（${written}回書かれています）`,
+        );
+        return;
+      }
+    }
+
+    daemonChainDepth++;
+    const prevMode = execMode;
+    execMode = "daemon";
+
+    try {
+      const daemonApiNames: string[]   = ["console"];
+      const daemonApiValues: unknown[] = [mockConsole];
+      const daemonExposed = new Set<string>();
+
+      for (const id of deployedCardIds) {
+        const def = CARDS[id];
+        if (!def) continue;
+        const fnName = def.fn;
+        if (daemonExposed.has(fnName)) continue;
+        daemonExposed.add(fnName);
+
+        if (fnName === "attack") {
+          daemonApiNames.push("attack"); daemonApiValues.push(lrAttackFn);
+        } else if (fnName === "block") {
+          daemonApiNames.push("block"); daemonApiValues.push(lrBlockFn);
+        } else if (fnName === "execute") {
+          daemonApiNames.push("execute"); daemonApiValues.push(legacyLib["execute"]);
+        } else if (lrLib[fnName]) {
+          daemonApiNames.push(fnName); daemonApiValues.push(lrLib[fnName]);
+        } else if (legacyLib[fnName]) {
+          daemonApiNames.push(fnName); daemonApiValues.push(legacyLib[fnName]);
+        }
+      }
+
+      for (const [name, fn] of Object.entries(readApi)) {
+        daemonApiNames.push(name); daemonApiValues.push(fn);
+      }
+      daemonApiNames.push("isUsable"); daemonApiValues.push(isUsableFn);
+
+      try {
+        // eslint-disable-next-line no-new-func
+        const daemonFn = new Function(...daemonApiNames, `"use strict";\n${req.daemonCode}`);
+        daemonFn(...daemonApiValues);
+      } catch (e) {
+        if (e instanceof CombatEndSignal) throw e;
+        const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+        consoleLogs.push(`[DAEMON] ⚠ ${msg}`);
+      }
+    } finally {
+      execMode = prevMode;
+      daemonChainDepth--;
+    }
+  };
 
   const fmt = (...args: unknown[]) =>
     args.map((v) => (typeof v === "object" ? JSON.stringify(v) : String(v))).join(" ");
@@ -636,7 +803,9 @@ function run(req: RunRequest): RunResult {
         apiNames.push("block");
         apiValues.push(lrBlockFn);
       } else if (fnName === "execute") {
-        // execute is handled in legacyLib; skip here, added below
+        // handles both lrExecute and legacy execute
+        apiNames.push("execute");
+        apiValues.push(legacyLib["execute"]);
       } else if (lrLib[fnName]) {
         apiNames.push(fnName);
         apiValues.push(lrLib[fnName]);
@@ -644,12 +813,6 @@ function run(req: RunRequest): RunResult {
         apiNames.push(fnName);
         apiValues.push(legacyLib[fnName]);
       }
-    }
-
-    // Always expose execute (handles both lrExecute and legacy execute)
-    if (!exposed.has("execute")) {
-      apiNames.push("execute");
-      apiValues.push(legacyLib["execute"]);
     }
   } else {
     // Legacy mode: expose based on hand
@@ -696,6 +859,22 @@ function run(req: RunRequest): RunResult {
   for (const [name, fn] of Object.entries(readApi)) {
     apiNames.push(name); apiValues.push(fn);
   }
+  apiNames.push("isUsable"); apiValues.push(isUsableFn);
+
+  // allowedFns 指定時（チュートリアル等）は、その名前の関数だけをサンドボックスに公開する
+  if (req.allowedFns) {
+    const allow = new Set([...req.allowedFns, "console"]);
+    const filteredNames: string[]   = [];
+    const filteredValues: unknown[] = [];
+    apiNames.forEach((name, i) => {
+      if (allow.has(name)) {
+        filteredNames.push(name);
+        filteredValues.push(apiValues[i]);
+      }
+    });
+    apiNames.length = 0;   apiNames.push(...filteredNames);
+    apiValues.length = 0;  apiValues.push(...filteredValues);
+  }
 
   // ── 実行 ─────────────────────────────────────────────────────────
   const execCode = req.prefixCode
@@ -708,6 +887,7 @@ function run(req: RunRequest): RunResult {
     fn(...apiValues);
     return {
       actions, finalState: state, consoleLogs,
+      finalIntentIndex: intentIdx,
       finalHand: runtimeHand,
       finalDrawPile: runtimeDrawPile,
       finalDiscardPile: runtimeDiscardPile,
@@ -721,6 +901,7 @@ function run(req: RunRequest): RunResult {
         finalDrawPile: runtimeDrawPile,
         finalDiscardPile: runtimeDiscardPile,
         disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
+        finalDeployedCardIds: deployedCardIds,
       };
     }
     if (e instanceof EndTurnSignal) {
@@ -730,6 +911,7 @@ function run(req: RunRequest): RunResult {
         finalDrawPile: runtimeDrawPile,
         finalDiscardPile: runtimeDiscardPile,
         disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
+        finalDeployedCardIds: deployedCardIds,
       };
     }
     if (e instanceof CyclerSignal) {
@@ -739,6 +921,7 @@ function run(req: RunRequest): RunResult {
         finalDrawPile: runtimeDrawPile,
         finalDiscardPile: runtimeDiscardPile,
         disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
+        finalDeployedCardIds: deployedCardIds,
       };
     }
     if (e instanceof ForceQuitSignal) {
@@ -748,6 +931,7 @@ function run(req: RunRequest): RunResult {
         finalDrawPile: runtimeDrawPile,
         finalDiscardPile: runtimeDiscardPile,
         disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
+        finalDeployedCardIds: deployedCardIds,
       };
     }
     if (e instanceof RecursionSignal) {
@@ -758,6 +942,19 @@ function run(req: RunRequest): RunResult {
         finalDrawPile: runtimeDrawPile,
         finalDiscardPile: runtimeDiscardPile,
         disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
+        finalDeployedCardIds: deployedCardIds,
+      };
+    }
+    if (e instanceof CombatEndSignal) {
+      return {
+        actions, finalState: state, consoleLogs,
+        combatResult: e.result,
+        finalIntentIndex: intentIdx,
+        finalHand: runtimeHand,
+        finalDrawPile: runtimeDrawPile,
+        finalDiscardPile: runtimeDiscardPile,
+        disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
+        finalDeployedCardIds: deployedCardIds,
       };
     }
     return {

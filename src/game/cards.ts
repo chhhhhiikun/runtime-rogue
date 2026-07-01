@@ -123,7 +123,7 @@ export const CARDS: Record<CardId, CardDef> = {
   lrAttack: {
     id: "lrAttack", fn: "attack",
     signature: "attack()",
-    description: "敵に 6 ダメージ。コスト: 1",
+    description: "敵に 3+⌊combo/3⌋ ダメージ。コンボが増えるほど威力UP。コスト: 1",
     rarity: "starter", attributes: [],
   },
   lrBlock: {
@@ -278,4 +278,55 @@ export const CARDS: Record<CardId, CardDef> = {
   },
 };
 
-export const HAND_SIZE = 5;
+export const HAND_SIZE = 5; // 毎ターン開始時に5枚ドロー（StS方式：山札切れで捨て札シャッフル）
+
+// カードの基礎コスト（動的コストのカードは 0 を返す）。Deploy コスト計算にも使う。
+export function getCardBaseCost(id: CardId): number {
+  switch (id) {
+    // Legacy
+    case "attack": return 0; // dynamic
+    case "block": return 0;  // dynamic
+    case "heal": return 0;   // dynamic
+    case "execute": return 3;
+    case "vulnerable": return 2;
+    case "poison": return 0; // dynamic
+    case "pierce": return 0; // dynamic
+    case "shatter": return 2;
+    case "drain": return 0;  // dynamic
+    case "nullify": return 3;
+    case "overload": return 0; // dynamic
+    case "reboot": return 0;
+    case "combo": return 0;  // dynamic
+    case "debug": return 0;
+    case "cycler": return 0;
+    // LR Starter
+    case "lrAttack": return 1;
+    case "lrBlock": return 1;
+    case "quickScan": return 1;
+    // LR Common
+    case "initialize": return 1;
+    case "noop": return 0;
+    case "shift": return 0;
+    case "sleep": return 1;
+    case "forceQuit": return 1;
+    case "overClock": return 0;
+    case "ping": return 1;
+    case "incrementalAttack": return 2;
+    case "refactoring": return 1;
+    case "patch": return 0;
+    // LR Uncommon
+    case "incrementalBlock": return 2;
+    case "conditionalBlock": return 1;
+    case "bufferOverflowProtection": return 1;
+    case "asyncDraw": return 1;
+    case "caching": return 0;
+    case "multiThreading": return 2;
+    case "garbageCollection": return 1;
+    // LR Rare
+    case "recursion": return 3;
+    case "asyncAwait": return 2;
+    case "stackOverflow": return 1;
+    case "lrExecute": return 3;
+    case "compilerOptimization": return 2;
+  }
+}

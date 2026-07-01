@@ -1,6 +1,6 @@
 import CodeWorker from "./worker.ts?worker";
 import type { RunRequest, RunResult, UnlockFunctions, DeckSnapshot } from "./worker";
-import type { CombatState } from "../game/state";
+import type { CombatState, EnemyIntent } from "../game/state";
 import type { CardId } from "../game/cards";
 
 export type { UnlockFunctions, DeckSnapshot };
@@ -18,11 +18,16 @@ export function runUserCode(
   hand: CardId[],
   unlocks: UnlockFunctions = DEFAULT_UNLOCKS,
   deckSnapshot?: DeckSnapshot,
-  timeoutMs = 1000,
+  timeoutMs = 5000,
   prefixCode?: string,
   drawPile?: CardId[],
   discardPile?: CardId[],
   characterCards?: CardId[],
+  intentPattern?: EnemyIntent[],
+  intentIndex?: number,
+  daemonCode?: string,
+  deployedCardIds?: CardId[],
+  allowedFns?: string[],
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     const worker = new CodeWorker();
@@ -57,6 +62,9 @@ export function runUserCode(
     const req: RunRequest = {
       code, prefixCode, state, hand, unlocks, deckSnapshot,
       drawPile, discardPile, characterCards,
+      intentPattern, intentIndex,
+      daemonCode, deployedCardIds,
+      allowedFns,
     };
     worker.postMessage(req);
   });
