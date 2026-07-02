@@ -3,6 +3,8 @@
 export interface EnemyIntent {
   kind: "attack" | "block";
   value: number;
+  boosted?: boolean;      // 過負荷反撃などで強化された意図かどうか（ログ表示用）
+  ignoresBlock?: boolean; // ゴーレムの装甲貫通ギミック用。真の場合、プレイヤーのブロックを無視して直接ダメージを与える
 }
 
 export interface CombatState {
@@ -31,6 +33,10 @@ export interface CombatState {
   characterId: string;         // 現在のキャラクターId
   daemonCost: number;           // Daemon の現在コスト
   maxDaemonCost: number;        // Daemon の最大コスト（毎ターン全回復）
+  damageDealtThisTurn: number;  // このターン敵に与えた合計ダメージ（過負荷反撃などの判定用）
+  sameActionKind: string | null; // 直近に呼ばれたカードのkind（単眼看破ギミック用）
+  sameActionStreak: number;      // 同じkindが連続で呼ばれた回数（単眼看破ギミック用）
+  maxSingleHitThisTurn: number;  // このターン中、1回のカード呼び出しで与えた最大ダメージ（禁忌の一撃ギミック用）
 }
 
 export const MAX_ENERGY = 10;
@@ -63,5 +69,9 @@ export function initialState(): CombatState {
     characterId: "loopRunner",
     daemonCost: MAX_DAEMON_COST,
     maxDaemonCost: MAX_DAEMON_COST,
+    damageDealtThisTurn: 0,
+    sameActionKind: null,
+    sameActionStreak: 0,
+    maxSingleHitThisTurn: 0,
   };
 }

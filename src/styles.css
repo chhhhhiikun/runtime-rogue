@@ -246,6 +246,22 @@ body {
   min-height: 1em;
 }
 
+.status-block      { color: var(--accent); font-weight: 600; }
+.status-vulnerable { color: var(--danger); }
+.status-poison     { color: var(--player); }
+
+.intent-boosted { color: var(--danger); font-weight: 700; }
+.intent-pierce  { color: var(--energy); font-weight: 700; }
+
+/* ステージ対抗ギミック（過負荷反撃/単眼看破/装甲貫通/詠唱封印/禁忌の一撃/見切りの一撃/覚醒）共通の進捗表示行 */
+.overkill-row {
+  font-size: 0.76rem;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.overkill-row.hidden { display: none; }
+.overkill-row.overkill-ready { color: var(--danger); font-weight: 700; }
+
 /* ═══ プレイヤーウィジェット ════════════════════════════════════ */
 
 .player-name { color: var(--player); font-weight: 700; margin-bottom: 4px; }
@@ -893,6 +909,10 @@ body {
 .rarity-common  { background: #4fc36b; }
 .rarity-uncommon{ background: #5aafe8; }
 .rarity-rare    { background: #b06cff; }
+.rarity-fatal   {
+  background: linear-gradient(135deg, #ff4d4d, #ffae00);
+  box-shadow: 0 0 6px #ff4d4d;
+}
 
 /* ── カード属性タグ ────────────────────────────────────────────── */
 .attr-tag {

@@ -1,8 +1,91 @@
 import type { CombatState } from "../game/state";
 import { CARDS, type CardId } from "../game/cards";
 import type { Deck } from "../game/deck";
+import type { StageGimmick } from "../game/stages";
 
 const $$ = (id: string) => document.getElementById(id);
+
+let gimmick: StageGimmick | undefined;
+
+export function setGimmick(cfg?: StageGimmick): void {
+  gimmick = cfg;
+}
+
+// ステージ対抗ギミックの進捗表示テキストを算出する（enemy-overkill 行に表示）
+function gimmickProgressText(g: StageGimmick, state: CombatState): { text: string; ready: boolean } {
+  switch (g.kind) {
+    case "overkill": {
+      const dealt = Math.min(state.damageDealtThisTurn, g.threshold);
+      const ready = state.damageDealtThisTurn >= g.threshold;
+      return {
+        ready,
+        text: ready
+          ? `⚠ 過負荷反撃 発動中！（次の攻撃 ×${g.multiplier}）`
+          : `過負荷反撃まで: ${dealt} / ${g.threshold} ダメージ`,
+      };
+    }
+    case "monotony": {
+      const streak = Math.min(state.sameActionStreak, g.streakThreshold);
+      return {
+        ready: false,
+        text: `単眼看破: 同じ行動 ${streak} / ${g.streakThreshold} 連続（敵ブロック+${g.blockGain}）`,
+      };
+    }
+    case "overguard": {
+      const ready = state.player.block >= g.threshold;
+      return {
+        ready,
+        text: ready
+          ? `⚠ 装甲貫通 発動準備完了！（次の敵攻撃がブロック無視）`
+          : `装甲貫通まで: ブロック ${state.player.block} / ${g.threshold}`,
+      };
+    }
+    case "overcastSeal": {
+      const combo = Math.min(state.comboCount, g.comboThreshold);
+      const ready = state.comboIncrement === 0;
+      return {
+        ready,
+        text: ready
+          ? `🔒 詠唱封印 発動中（コンボ増加停止）`
+          : `詠唱封印まで: コンボ ${combo} / ${g.comboThreshold}`,
+      };
+    }
+    case "burstSpike": {
+      const hit = Math.min(state.maxSingleHitThisTurn, g.threshold);
+      const ready = state.maxSingleHitThisTurn >= g.threshold;
+      return {
+        ready,
+        text: ready
+          ? `⚠ 禁忌の一撃 発動中！（次の攻撃 ×${g.multiplier}）`
+          : `禁忌の一撃まで: 最大単発 ${hit} / ${g.threshold} ダメージ`,
+      };
+    }
+    case "imbalance": {
+      const combo = Math.min(state.comboCount, g.threshold);
+      const ready = state.comboCount >= g.threshold;
+      return {
+        ready,
+        text: ready
+          ? `⚠ 見切りの一撃 警戒中（コンボを増やすたび${g.damage}ダメージ）`
+          : `見切りの一撃まで: コンボ ${combo} / ${g.threshold}`,
+      };
+    }
+    case "enrage": {
+      const over = state.turn - g.turnThreshold;
+      if (over > 0) {
+        const mult = (1 + over * g.multiplierPerTurn).toFixed(2);
+        return {
+          ready: true,
+          text: `🔥 覚醒中（攻撃倍率 ×${mult}、コンボ増加量 ${state.comboIncrement.toFixed(2)}）`,
+        };
+      }
+      return {
+        ready: false,
+        text: `覚醒まで: ターン ${state.turn} / ${g.turnThreshold}`,
+      };
+    }
+  }
+}
 
 export function render(state: CombatState, deck: Deck, disabledCards?: Set<CardId>): void {
   // 敵
@@ -14,18 +97,37 @@ export function render(state: CombatState, deck: Deck, disabledCards?: Set<CardI
   const intentEl = $$("enemy-intent");
   if (intentEl) {
     const i = state.enemy.intent;
+    intentEl.classList.toggle("intent-boosted", !!i.boosted && !i.ignoresBlock);
+    intentEl.classList.toggle("intent-pierce", !!i.ignoresBlock);
     intentEl.textContent = i.kind === "attack"
-      ? `🗡 次の攻撃: ${i.value} ダメージ`
+      ? (i.ignoresBlock
+          ? `⚔ 装甲貫通攻撃！ブロック無視: ${i.value} ダメージ`
+          : i.boosted
+            ? `⚠ 強化された攻撃！: ${i.value} ダメージ`
+            : `🗡 次の攻撃: ${i.value} ダメージ`)
       : `🛡 次はブロック: ${i.value}`;
+  }
+
+  const overkillEl = $$("enemy-overkill");
+  if (overkillEl) {
+    if (gimmick) {
+      const { text, ready } = gimmickProgressText(gimmick, state);
+      overkillEl.classList.remove("hidden");
+      overkillEl.classList.toggle("overkill-ready", ready);
+      overkillEl.textContent = text;
+    } else {
+      overkillEl.classList.add("hidden");
+      overkillEl.textContent = "";
+    }
   }
 
   const eStatus = $$("enemy-status");
   if (eStatus) {
     const parts: string[] = [];
-    if (state.enemy.block > 0)      parts.push(`🛡 ${state.enemy.block}`);
-    if (state.enemy.vulnerable > 0)  parts.push("💢脆弱");
-    if (state.enemy.poison > 0)      parts.push(`☠毒 ${state.enemy.poison}`);
-    eStatus.textContent = parts.join("  ");
+    if (state.enemy.block > 0)      parts.push(`<span class="status-block">🛡 ${state.enemy.block}</span>`);
+    if (state.enemy.vulnerable > 0)  parts.push(`<span class="status-vulnerable">💢脆弱</span>`);
+    if (state.enemy.poison > 0)      parts.push(`<span class="status-poison">☠毒 ${state.enemy.poison}</span>`);
+    eStatus.innerHTML = parts.join("  ");
   }
 
   // プレイヤー

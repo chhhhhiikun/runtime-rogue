@@ -2,6 +2,7 @@ import CodeWorker from "./worker.ts?worker";
 import type { RunRequest, RunResult, UnlockFunctions, DeckSnapshot } from "./worker";
 import type { CombatState, EnemyIntent } from "../game/state";
 import type { CardId } from "../game/cards";
+import type { StageGimmick } from "../game/stages";
 
 export type { UnlockFunctions, DeckSnapshot };
 
@@ -28,6 +29,8 @@ export function runUserCode(
   daemonCode?: string,
   deployedCardIds?: CardId[],
   allowedFns?: string[],
+  runDaemonAtStart?: boolean,
+  gimmick?: StageGimmick,
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     const worker = new CodeWorker();
@@ -64,7 +67,8 @@ export function runUserCode(
       drawPile, discardPile, characterCards,
       intentPattern, intentIndex,
       daemonCode, deployedCardIds,
-      allowedFns,
+      allowedFns, runDaemonAtStart,
+      gimmick,
     };
     worker.postMessage(req);
   });

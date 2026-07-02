@@ -1,6 +1,7 @@
 import type { CombatState, EnemyIntent } from "../game/state";
 import { applyAction, type Action } from "../game/actions";
 import { CARDS, HAND_SIZE, getCardBaseCost, type CardId } from "../game/cards";
+import type { StageGimmick } from "../game/stages";
 
 export interface UnlockFunctions {
   deckInfo: boolean;   // myDeck() myHand() myDrawPile() myDiscard()
@@ -31,6 +32,8 @@ export interface RunRequest {
   daemonCode?: string;
   deployedCardIds?: CardId[];
   allowedFns?: string[]; // 指定時、この名前の関数のみサンドボックスに公開する（チュートリアル用）
+  runDaemonAtStart?: boolean; // trueの場合、メインスクリプト実行前に一度だけDaemonを走らせる（戦闘開始時用）
+  gimmick?: StageGimmick; // ステージごとの対抗ギミック設定
 }
 
 export interface RunResult {
@@ -44,11 +47,11 @@ export interface RunResult {
   finalHand?: CardId[];
   finalDrawPile?: CardId[];
   finalDiscardPile?: CardId[];
-  recursionTriggered?: boolean;
   disposedCardIds?: CardId[];
   combatResult?: "victory" | "defeat";
   finalIntentIndex?: number;
   finalDeployedCardIds?: CardId[];
+  finalEnergy?: number; // deploy() 等、actionsを経由しないMain Clock変動を反映するため
 }
 
 class OutOfEnergy extends Error {}
@@ -58,7 +61,6 @@ class CyclerSignal extends Error {
   constructor(public readonly n: number) { super(); }
 }
 class ForceQuitSignal extends Error {}
-class RecursionSignal extends Error {}
 class CombatEndSignal extends Error {
   constructor(public readonly result: "victory" | "defeat") { super(); }
 }
@@ -164,6 +166,7 @@ function run(req: RunRequest): RunResult {
 
   const record = (a: Extract<Action, { cost: number }>, label: string) => {
     const cost = a.cost;
+    const dmgBefore = state.damageDealtThisTurn;
     if (execMode === "daemon") {
       if (cost > state.daemonCost) {
         throw new DaemonCostInsufficientException(
@@ -181,6 +184,32 @@ function run(req: RunRequest): RunResult {
       }
       applyAction(state, a);
       actions.push(a);
+    }
+
+    // 単眼看破（サイクロプス）判定用: 同じ関数(kind)が連続で呼ばれた回数を記録
+    if (a.kind === state.sameActionKind) {
+      state.sameActionStreak++;
+    } else {
+      state.sameActionKind = a.kind;
+      state.sameActionStreak = 1;
+    }
+    const gimmick = req.gimmick;
+    if (gimmick?.kind === "monotony" && state.sameActionStreak >= gimmick.streakThreshold) {
+      const blockAction: Action = {
+        kind: "gimmickBlock",
+        amount: gimmick.blockGain,
+        label: `単眼看破: 敵ブロック+${gimmick.blockGain}`,
+      };
+      applyAction(state, blockAction);
+      actions.push(blockAction);
+      state.sameActionStreak = 0;
+      consoleLogs.push(`[GIMMICK] ⚠ 単眼看破！ 同じ行動を見破られ、敵がブロック+${gimmick.blockGain}を得た`);
+    }
+
+    // 禁忌の一撃（デーモン）判定用: 1回の呼び出しで与えたダメージの最大値を記録
+    const dealtThisCall = state.damageDealtThisTurn - dmgBefore;
+    if (dealtThisCall > state.maxSingleHitThisTurn) {
+      state.maxSingleHitThisTurn = dealtThisCall;
     }
   };
 
@@ -214,7 +243,26 @@ function run(req: RunRequest): RunResult {
 
   // コンボ加算（各カード呼び出し後）
   const addCombo = (): void => {
+    const beforeCombo = state.comboCount;
     state.comboCount += state.comboIncrement;
+
+    const gimmick = req.gimmick;
+    // 詠唱封印（魔道士）: コンボが閾値に達したら、以降このターンはコンボが増加しなくなる
+    if (gimmick?.kind === "overcastSeal" && state.comboIncrement !== 0 && state.comboCount >= gimmick.comboThreshold) {
+      state.comboIncrement = 0;
+      consoleLogs.push("[GIMMICK] ⚠ 詠唱封印！ このターン、コンボがこれ以上増加しなくなった");
+    }
+
+    // 見切りの一撃（竜騎士）: コンボ数が閾値以上の状態からさらに増加させると、都度ダメージを受ける
+    if (gimmick?.kind === "imbalance" && beforeCombo >= gimmick.threshold) {
+      const dmgAction: Action = {
+        kind: "gimmickDamage",
+        amount: gimmick.damage,
+        label: `見切りの一撃: ${gimmick.damage}ダメージ`,
+      };
+      applyAction(state, dmgAction);
+      actions.push(dmgAction);
+    }
   };
 
   const num = (v: unknown) => Math.max(0, Math.floor(Number(v) || 0));
@@ -332,13 +380,6 @@ function run(req: RunRequest): RunResult {
 
   // Loop Runner cards
   const lrLib: Record<string, (...args: unknown[]) => void> = {
-    quickScan: () => {
-      checkInHand("quickScan");
-      const cost = effectiveCost("quickScan", 1);
-      record({ kind: "quickScan", cost }, "quickScan()");
-      addCombo();
-      drawCards(1);
-    },
     initialize: () => {
       checkInHand("initialize");
       const cost = effectiveCost("initialize", 1);
@@ -350,26 +391,6 @@ function run(req: RunRequest): RunResult {
       checkUnique("noop");
       const cost = effectiveCost("noop", 0);
       record({ kind: "noop", cost }, "noop()");
-      addCombo();
-    },
-    shift: () => {
-      checkInHand("shift");
-      checkUnique("shift");
-      const cost = effectiveCost("shift", 0);
-      // Find first non-shift card in hand to discard
-      const discardIdx = runtimeHand.findIndex(id => id !== "shift");
-      if (discardIdx !== -1) {
-        runtimeDiscardPile.push(runtimeHand[discardIdx]);
-        runtimeHand.splice(discardIdx, 1);
-      }
-      record({ kind: "shift", cost }, "shift()");
-      addCombo();
-      drawCards(1);
-    },
-    sleep: () => {
-      checkInHand("sleep");
-      const cost = effectiveCost("sleep", 1);
-      record({ kind: "sleep", cost }, "sleep()");
       addCombo();
     },
     forceQuit: () => {
@@ -389,35 +410,10 @@ function run(req: RunRequest): RunResult {
       actions.push({ kind: "overClock", cost });
       addCombo();
     },
-    ping: () => {
-      checkInHand("ping");
-      const cost = effectiveCost("ping", 1);
-      const comboCount = state.comboCount;
-      const extra = state.asyncAwaitActive ? comboCount : 0;
-      record({ kind: "ping", cost, comboCount: comboCount + extra }, "ping()");
-      addCombo();
-    },
     incrementalAttack: () => {
       checkInHand("incrementalAttack");
       const cost = effectiveCost("incrementalAttack", 2);
-      const comboCount = state.comboCount;
-      const extra = state.asyncAwaitActive ? comboCount : 0;
-      record({ kind: "incrementalAttack", cost, comboCount: comboCount + extra }, "incrementalAttack()");
-      addCombo();
-    },
-    refactoring: () => {
-      checkInHand("refactoring");
-      const cost = effectiveCost("refactoring", 1);
-      // Find top 2 highest cost cards in hand
-      const handCosts = runtimeHand
-        .filter(id => id !== "refactoring")
-        .map(id => ({ id, cost: getCardBaseCost(id) }))
-        .sort((a, b) => b.cost - a.cost);
-      const toReduce = handCosts.slice(0, 2);
-      for (const { id } of toReduce) {
-        costReductions[id] = (costReductions[id] ?? 0) + 1;
-      }
-      record({ kind: "refactoring", cost }, "refactoring()");
+      record({ kind: "incrementalAttack", cost, comboCount: state.comboCount }, "incrementalAttack()");
       addCombo();
     },
     patch: () => {
@@ -432,12 +428,6 @@ function run(req: RunRequest): RunResult {
       checkUnique("incrementalBlock");
       const cost = effectiveCost("incrementalBlock", 2);
       record({ kind: "incrementalBlock", cost, comboCount: state.comboCount }, "incrementalBlock()");
-      addCombo();
-    },
-    conditionalBlock: () => {
-      checkInHand("conditionalBlock");
-      const cost = effectiveCost("conditionalBlock", 1);
-      record({ kind: "conditionalBlock", cost, comboCount: state.comboCount }, "conditionalBlock()");
       addCombo();
     },
     bufferOverflowProtection: () => {
@@ -457,74 +447,14 @@ function run(req: RunRequest): RunResult {
       const cost = effectiveCost("asyncDraw", 1);
       record({ kind: "asyncDraw", cost }, "asyncDraw()");
       addCombo();
-      const drawN = state.comboCount >= 5 ? 3 : 1;
-      drawCards(drawN);
-    },
-    caching: () => {
-      checkInHand("caching");
-      checkUnique("caching");
-      const cost = effectiveCost("caching", 0);
-      // Find highest cost card in hand (excluding caching itself)
-      const candidates = runtimeHand
-        .filter(id => id !== "caching")
-        .map(id => ({ id, cost: getCardBaseCost(id) }))
-        .sort((a, b) => b.cost - a.cost);
-      if (candidates.length > 0) {
-        state.cachedCardId = candidates[0].id;
-      }
-      record({ kind: "caching", cost }, "caching()");
-      addCombo();
-    },
-    multiThreading: () => {
-      checkInHand("multiThreading");
-      checkUnique("multiThreading");
-      const cost = effectiveCost("multiThreading", 2);
-      // Extra combo +2 (total +3 including addCombo below)
-      state.comboCount += 2;
-      record({ kind: "multiThreading", cost }, "multiThreading()");
-      addCombo();
-      drawCards(1);
-    },
-    garbageCollection: () => {
-      checkInHand("garbageCollection");
-      const cost = effectiveCost("garbageCollection", 1);
-      // Find non-attribute card from discard
-      const noAttrIdx = runtimeDiscardPile.findIndex(id => {
-        const def = CARDS[id];
-        return def && def.attributes.length === 0;
-      });
-      if (noAttrIdx !== -1) {
-        const recovered = runtimeDiscardPile[noAttrIdx];
-        runtimeDiscardPile.splice(noAttrIdx, 1);
-        runtimeHand.push(recovered);
-        state.costZeroCardIds.push(recovered);
-      }
-      record({ kind: "garbageCollection", cost }, "garbageCollection()");
-      addCombo();
-      disposeCard("garbageCollection");
-    },
-    recursion: () => {
-      checkInHand("recursion");
-      checkUnique("recursion");
-      const cost = effectiveCost("recursion", 3);
-      record({ kind: "recursion", cost }, "recursion()");
-      addCombo();
-      disposeCard("recursion");
-      throw new RecursionSignal();
-    },
-    asyncAwait: () => {
-      checkInHand("asyncAwait");
-      const cost = effectiveCost("asyncAwait", 2);
-      record({ kind: "asyncAwait", cost }, "asyncAwait()");
-      addCombo();
-      disposeCard("asyncAwait");
+      drawCards(2);
     },
     stackOverflow: () => {
       checkInHand("stackOverflow");
-      const cost = effectiveCost("stackOverflow", 1);
+      checkUnique("stackOverflow");
+      const cost = effectiveCost("stackOverflow", 2);
       record({ kind: "stackOverflow", cost }, "stackOverflow()");
       addCombo();
-      disposeCard("stackOverflow");
     },
     compilerOptimization: () => {
       checkInHand("compilerOptimization");
@@ -541,6 +471,13 @@ function run(req: RunRequest): RunResult {
         }
       }
     },
+    overclockBurst: () => {
+      checkInHand("overclockBurst");
+      checkUnique("overclockBurst");
+      const cost = effectiveCost("overclockBurst", 0);
+      record({ kind: "overclockBurst", cost }, "overclockBurst()");
+      addCombo();
+    },
   };
 
   // LR attack/block overrides (no-arg versions)
@@ -549,19 +486,7 @@ function run(req: RunRequest): RunResult {
       checkInHand("lrAttack");
       const cost = effectiveCost("lrAttack", 1);
       const comboAtUse = state.comboCount;
-      // asyncAwait bonus: +comboCount additional damage
-      const asyncBonus = state.asyncAwaitActive ? comboAtUse : 0;
       record({ kind: "lrAttack", cost, comboCount: comboAtUse }, "attack()");
-      if (asyncBonus > 0) {
-        const raw = state.enemy.vulnerable > 0 ? Math.floor(asyncBonus * 1.5) : asyncBonus;
-        let rem = raw;
-        if (state.enemy.block > 0) {
-          const absorbed = Math.min(state.enemy.block, rem);
-          state.enemy.block -= absorbed;
-          rem -= absorbed;
-        }
-        state.enemy.hp = Math.max(0, state.enemy.hp - rem);
-      }
       addCombo();
     } else {
       legacyLib.attack!(0);
@@ -572,7 +497,8 @@ function run(req: RunRequest): RunResult {
     if (availableSource().includes("lrBlock")) {
       checkInHand("lrBlock");
       const cost = effectiveCost("lrBlock", 1);
-      record({ kind: "lrBlock", cost }, "block()");
+      const comboAtUse = state.comboCount;
+      record({ kind: "lrBlock", cost, comboCount: comboAtUse }, "block()");
       addCombo();
     } else {
       legacyLib.block!(0);
@@ -590,6 +516,10 @@ function run(req: RunRequest): RunResult {
     enemyIntent: () => ({ ...state.enemy.intent }),
     comboCount:  () => state.comboCount,
     daemonCost:  () => state.daemonCost,
+    damageDealtThisTurn: () => state.damageDealtThisTurn,
+    sameActionStreak:    () => state.sameActionStreak,
+    comboIncrement:      () => state.comboIncrement,
+    turn:                () => state.turn,
   };
 
   if (req.unlocks.deckInfo && req.deckSnapshot) {
@@ -598,6 +528,7 @@ function run(req: RunRequest): RunResult {
     readApi["myHand"]      = () => toFnNames([...runtimeHand]);
     readApi["myDrawPile"]  = () => toFnNames([...runtimeDrawPile]);
     readApi["myDiscard"]   = () => toFnNames([...runtimeDiscardPile]);
+    readApi["myDeployed"]  = () => toFnNames([...deployedCardIds]);
   }
 
   // endTurn() は常にアンロック済み。intentPattern が渡されている場合は
@@ -612,13 +543,62 @@ function run(req: RunRequest): RunResult {
 
       // 次のインテントを決定
       const nextIdx = (intentIdx + 1) % intentPattern.length;
-      const nextIntent: EnemyIntent = { ...intentPattern[nextIdx] };
+      let nextIntent: EnemyIntent = { ...intentPattern[nextIdx] };
+
+      // 敵ギミック: ターン終了時点の状態を見て、次の意図を書き換える
+      const gimmick = req.gimmick;
+      let gimmickLogLabel: string | null = null;
+      switch (gimmick?.kind) {
+        case "overkill":
+          // 過負荷反撃（ウェアウルフ）: このターンの合計被ダメが閾値以上なら次の意図を強化する
+          if (state.damageDealtThisTurn >= gimmick.threshold) {
+            nextIntent = { ...nextIntent, value: Math.round(nextIntent.value * gimmick.multiplier), boosted: true };
+            gimmickLogLabel = "過負荷反撃";
+          }
+          break;
+        case "overguard":
+          // 装甲貫通（ゴーレム）: 自分ブロックが閾値以上残っているなら次の敵攻撃はブロック無視
+          if (state.player.block >= gimmick.threshold) {
+            nextIntent = { ...nextIntent, ignoresBlock: true };
+            gimmickLogLabel = "装甲貫通";
+          }
+          break;
+        case "burstSpike":
+          // 禁忌の一撃（デーモン）: このターンの単発最大ダメージが閾値以上なら次の意図を強化する
+          if (state.maxSingleHitThisTurn >= gimmick.threshold) {
+            nextIntent = { ...nextIntent, value: Math.round(nextIntent.value * gimmick.multiplier), boosted: true };
+            gimmickLogLabel = "禁忌の一撃";
+          }
+          break;
+        case "enrage": {
+          // 覚醒（ドラゴン）: ターン数が閾値を超過した分だけ次の意図を強化する
+          // （コンボ増加量の減衰は下の次ターン準備部分で、ターン数から決定的に算出する）
+          const over = state.turn - gimmick.turnThreshold + 1;
+          if (over > 0) {
+            const mult = 1 + over * gimmick.multiplierPerTurn;
+            nextIntent = { ...nextIntent, value: Math.round(nextIntent.value * mult), boosted: true };
+            gimmickLogLabel = "覚醒";
+          }
+          break;
+        }
+        // monotony（サイクロプス）と imbalance（竜騎士）はカード使用の都度、即時に処理されるため
+        // ターン終了時のチェックは不要
+        default:
+          break;
+      }
+      if (gimmickLogLabel) {
+        consoleLogs.push(`[GIMMICK] ⚠ ${gimmickLogLabel}発動！ 次の敵の行動が変化した`);
+      }
 
       // enemyTurn アクションを記録（main.ts側でアニメーション再生用）
       const currentIntent = { ...state.enemy.intent };
       const attackLabel = currentIntent.kind === "block"
         ? `敵はブロック +${currentIntent.value} を得た`
-        : `敵の攻撃！ あなたに ${currentIntent.value} ダメージ`;
+        : currentIntent.ignoresBlock
+          ? `⚔ 装甲貫通攻撃！ ブロックを無視してあなたに ${currentIntent.value} ダメージ`
+          : currentIntent.boosted
+            ? `⚠ 敵の意図が強化されている！ あなたに ${currentIntent.value} ダメージ`
+            : `敵の攻撃！ あなたに ${currentIntent.value} ダメージ`;
       actions.push({
         kind: "enemyTurn",
         intent: currentIntent,
@@ -637,7 +617,7 @@ function run(req: RunRequest): RunResult {
         state.enemy.block += currentIntent.value;
       } else {
         let dmg = currentIntent.value;
-        if (state.player.block > 0) {
+        if (!currentIntent.ignoresBlock && state.player.block > 0) {
           const absorbed = Math.min(state.player.block, dmg);
           state.player.block -= absorbed;
           dmg -= absorbed;
@@ -656,9 +636,22 @@ function run(req: RunRequest): RunResult {
       state.uniqueUsedThisTurn = [];
       state.costZeroCardIds    = [];
       state.costReductionMap   = {};
+      state.damageDealtThisTurn = 0;
+      state.sameActionKind      = null;
+      state.sameActionStreak    = 0;
+      state.maxSingleHitThisTurn = 0;
       state.turn++;
       intentIdx = nextIdx;
       state.enemy.intent = nextIntent;
+
+      // 覚醒（ドラゴン）: 次に迎えるターンが閾値を超過している分だけ、
+      // コンボ増加量の初期値を段階的に減衰させる（ターン数から決定的に算出するため、毎ターン安全に再計算できる）
+      if (gimmick?.kind === "enrage") {
+        const overNext = state.turn - gimmick.turnThreshold;
+        if (overNext > 0) {
+          state.comboIncrement = Math.max(0, 1 - overNext * gimmick.comboIncrementDecay);
+        }
+      }
 
       // 手札を全捨て札 → 5枚(+ボーナス)ドロー
       runtimeDiscardPile.push(...runtimeHand);
@@ -690,10 +683,35 @@ function run(req: RunRequest): RunResult {
     return true;
   };
 
+  // deploy(fnName): 手札のカードをコードからDaemonへ常駐化する（Main/Daemon両方から呼べる）
+  const DAEMON_DEPLOY_BLOCKED_FNS = ["forceQuit", "cycler"];
+  const deployFn = (fn: unknown): void => {
+    const fnName = String(fn);
+    if (DAEMON_DEPLOY_BLOCKED_FNS.includes(fnName)) {
+      throw new Error(`「${fnName}」はDaemonにデプロイできません`);
+    }
+    const id = runtimeHand.find(cid => CARDS[cid]?.fn === fnName);
+    if (!id) {
+      throw new Error(`「${fnName}」は手札に見つかりません`);
+    }
+    const cost = getCardBaseCost(id) * 2;
+    if (state.energy < cost) {
+      throw new OutOfEnergy(
+        `Main Clock不足: 「${fnName}」のデプロイには ${cost} 必要ですが残り ${state.energy} です`,
+      );
+    }
+    state.energy -= cost;
+    const idx = runtimeHand.indexOf(id);
+    runtimeHand.splice(idx, 1);
+    deployedCardIds.push(id);
+    consoleLogs.push(`✅ 「${fnName}」をDaemonへデプロイしました（Main Clock -${cost}）`);
+  };
+
   // Daemon: 毎ターン開始時、手札ドロー後に自動実行される
   const runDaemonOnce = (): void => {
     state.daemonCost = state.maxDaemonCost;
-    if (!req.daemonCode || !req.daemonCode.trim() || deployedCardIds.length === 0) return;
+    // デプロイ済みが0枚でも実行する（コード内で deploy() して初めてデプロイするブートストラップに対応するため）
+    if (!req.daemonCode || !req.daemonCode.trim()) return;
 
     if (daemonChainDepth >= DAEMON_RECURSION_LIMIT) {
       consoleLogs.push(
@@ -704,13 +722,27 @@ function run(req: RunRequest): RunResult {
 
     // 静的解析: デプロイ済み枚数を超えて関数名が書かれていないかチェック
     // （ループで呼び出すのは1回書いたことになる。連呼するには while(true) 等が必要）
+    // Daemonもライブラリを共有するため、静的チェックはライブラリ込みのコードに対して行う
+    const daemonFullCode = req.prefixCode
+      ? `${req.prefixCode}\n\n${req.daemonCode}`
+      : req.daemonCode;
+    const daemonCodeForCheck = stripComments(daemonFullCode);
+
     const deployedCounts = new Map<string, number>();
     for (const id of deployedCardIds) {
       const def = CARDS[id];
       if (!def) continue;
       deployedCounts.set(def.fn, (deployedCounts.get(def.fn) ?? 0) + 1);
     }
-    const daemonCodeForCheck = stripComments(req.daemonCode);
+    // コード内で deploy("fn") を呼んでいる回数ぶん、実行中にそのfnが使えるようになる想定で加算する
+    // （その場でdeployしてから使うコードを静的チェックでブロックしないため）
+    const deployCallRegex = /\bdeploy\s*\(\s*["'`](\w+)["'`]\s*\)/g;
+    let deployMatch: RegExpExecArray | null;
+    while ((deployMatch = deployCallRegex.exec(daemonCodeForCheck))) {
+      const targetFn = deployMatch[1];
+      deployedCounts.set(targetFn, (deployedCounts.get(targetFn) ?? 0) + 1);
+    }
+
     for (const [fnName, count] of deployedCounts) {
       const regex   = new RegExp(`\\b${fnName}\\s*\\(`, "g");
       const written = (daemonCodeForCheck.match(regex) ?? []).length;
@@ -731,7 +763,10 @@ function run(req: RunRequest): RunResult {
       const daemonApiValues: unknown[] = [mockConsole];
       const daemonExposed = new Set<string>();
 
-      for (const id of deployedCardIds) {
+      // キャラの全カード関数を公開し、実際に呼べるかは checkInHand（availableSource）で判定する。
+      // deployedCardIds のスナップショットだけを公開すると、スクリプト内で deploy() した
+      // カードが同じ実行内で呼べない（new Function の引数は実行前に固定されるため）。
+      for (const id of req.characterCards ?? []) {
         const def = CARDS[id];
         if (!def) continue;
         const fnName = def.fn;
@@ -755,10 +790,11 @@ function run(req: RunRequest): RunResult {
         daemonApiNames.push(name); daemonApiValues.push(fn);
       }
       daemonApiNames.push("isUsable"); daemonApiValues.push(isUsableFn);
+      daemonApiNames.push("deploy");   daemonApiValues.push(deployFn);
 
       try {
         // eslint-disable-next-line no-new-func
-        const daemonFn = new Function(...daemonApiNames, `"use strict";\n${req.daemonCode}`);
+        const daemonFn = new Function(...daemonApiNames, `"use strict";\n${daemonFullCode}`);
         daemonFn(...daemonApiValues);
       } catch (e) {
         if (e instanceof CombatEndSignal) throw e;
@@ -860,6 +896,7 @@ function run(req: RunRequest): RunResult {
     apiNames.push(name); apiValues.push(fn);
   }
   apiNames.push("isUsable"); apiValues.push(isUsableFn);
+  apiNames.push("deploy");   apiValues.push(deployFn);
 
   // allowedFns 指定時（チュートリアル等）は、その名前の関数だけをサンドボックスに公開する
   if (req.allowedFns) {
@@ -874,6 +911,29 @@ function run(req: RunRequest): RunResult {
     });
     apiNames.length = 0;   apiNames.push(...filteredNames);
     apiValues.length = 0;  apiValues.push(...filteredValues);
+  }
+
+  // 戦闘開始時: メインスクリプトの実行前に一度だけDaemonを走らせる
+  // （通常はendTurn()経由でのみ起動するため、ターン1はこれがないと一度もDaemonが動かない）
+  if (req.runDaemonAtStart) {
+    try {
+      runDaemonOnce();
+    } catch (e) {
+      if (e instanceof CombatEndSignal) {
+        return {
+          actions, finalState: state, consoleLogs,
+          combatResult: e.result,
+          finalIntentIndex: intentIdx,
+          finalHand: runtimeHand,
+          finalDrawPile: runtimeDrawPile,
+          finalDiscardPile: runtimeDiscardPile,
+          disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
+          finalDeployedCardIds: deployedCardIds,
+          finalEnergy: state.energy,
+        };
+      }
+      throw e;
+    }
   }
 
   // ── 実行 ─────────────────────────────────────────────────────────
@@ -892,6 +952,8 @@ function run(req: RunRequest): RunResult {
       finalDrawPile: runtimeDrawPile,
       finalDiscardPile: runtimeDiscardPile,
       disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
+      finalDeployedCardIds: deployedCardIds,
+      finalEnergy: state.energy,
     };
   } catch (e) {
     if (e instanceof OutOfEnergy) {
@@ -902,6 +964,7 @@ function run(req: RunRequest): RunResult {
         finalDiscardPile: runtimeDiscardPile,
         disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
         finalDeployedCardIds: deployedCardIds,
+        finalEnergy: state.energy,
       };
     }
     if (e instanceof EndTurnSignal) {
@@ -912,6 +975,7 @@ function run(req: RunRequest): RunResult {
         finalDiscardPile: runtimeDiscardPile,
         disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
         finalDeployedCardIds: deployedCardIds,
+        finalEnergy: state.energy,
       };
     }
     if (e instanceof CyclerSignal) {
@@ -922,6 +986,7 @@ function run(req: RunRequest): RunResult {
         finalDiscardPile: runtimeDiscardPile,
         disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
         finalDeployedCardIds: deployedCardIds,
+        finalEnergy: state.energy,
       };
     }
     if (e instanceof ForceQuitSignal) {
@@ -932,17 +997,7 @@ function run(req: RunRequest): RunResult {
         finalDiscardPile: runtimeDiscardPile,
         disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
         finalDeployedCardIds: deployedCardIds,
-      };
-    }
-    if (e instanceof RecursionSignal) {
-      return {
-        actions, finalState: state, consoleLogs,
-        recursionTriggered: true,
-        finalHand: runtimeHand,
-        finalDrawPile: runtimeDrawPile,
-        finalDiscardPile: runtimeDiscardPile,
-        disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
-        finalDeployedCardIds: deployedCardIds,
+        finalEnergy: state.energy,
       };
     }
     if (e instanceof CombatEndSignal) {
@@ -955,6 +1010,7 @@ function run(req: RunRequest): RunResult {
         finalDiscardPile: runtimeDiscardPile,
         disposedCardIds: disposedCardIds.length > 0 ? disposedCardIds : undefined,
         finalDeployedCardIds: deployedCardIds,
+        finalEnergy: state.energy,
       };
     }
     return {

@@ -4,7 +4,7 @@ import { type MonacoEditor, createEditor, getCode, setCode, insertText, colorize
 import { MAX_ENERGY, MAX_DAEMON_COST, type CombatState } from "./game/state";
 import { HAND_SIZE, CARDS, getCardBaseCost, type CardId } from "./game/cards";
 import { CHARACTERS, getCharacter, getAllCharacterCards, type CharacterDef } from "./game/characters";
-import { STAGES, type StageDef } from "./game/stages";
+import { STAGES, type StageDef, type StageGimmick } from "./game/stages";
 import { TUTORIAL_STEPS } from "./game/tutorial";
 import { Deck } from "./game/deck";
 import { applyAction } from "./game/actions";
@@ -15,7 +15,7 @@ import {
   appendLog, clearLog,
   appendConsoleLog, clearConsoleLog,
   showOverlay, hideOverlay,
-  setEnemyName, setStageLabel, setDeckCount,
+  setEnemyName, setStageLabel, setDeckCount, setGimmick,
 } from "./ui/render";
 
 // ── 型 ─────────────────────────────────────────────────────────────
@@ -393,13 +393,14 @@ function buildRewardModal(): void {
 }
 
 function showRewardScreen(char: CharacterDef, onPick: (id: CardId | null) => void): void {
-  // 重み付きランダム: Common 55% / Uncommon 30% / Rare 15%
+  // 重み付きランダム: Common 54% / Uncommon 30% / Rare 15% / Fatal 1%
   const pickWeighted = (): CardId | null => {
     const r = Math.random();
     let pool: CardId[];
-    if (r < 0.55)      pool = char.cardPool.common;
-    else if (r < 0.85) pool = char.cardPool.uncommon;
-    else               pool = char.cardPool.rare;
+    if (r < 0.54)      pool = char.cardPool.common;
+    else if (r < 0.84) pool = char.cardPool.uncommon;
+    else if (r < 0.99) pool = char.cardPool.rare;
+    else               pool = char.cardPool.fatal;
     if (pool.length === 0) pool = char.cardPool.common;
     return pool[Math.floor(Math.random() * pool.length)] ?? null;
   };
@@ -489,6 +490,7 @@ function buildEnemyWidget(): void {
       <div class="hp-bar"><div id="enemy-hp-fill" class="hp-fill enemy"></div></div>
       <span id="enemy-hp-text" class="hp-text"></span>
     </div>
+    <div id="enemy-overkill" class="overkill-row hidden"></div>
     <div id="enemy-status" class="status-row"></div>
   `);
   setupResize(widget);
@@ -566,7 +568,7 @@ function buildConsoleWidget(): void {
         return;
       }
       const fnName = deployMatch[1];
-      const BLOCKED_FNS = ["forceQuit", "cycler", "recursion"];
+      const BLOCKED_FNS = ["forceQuit", "cycler"];
       if (BLOCKED_FNS.includes(fnName)) {
         appendConsoleLog([`> ${expr}`, `[error] 「${fnName}」はDaemonにデプロイできません`]);
         return;
@@ -636,8 +638,31 @@ function buildDaemonWidget(): void {
   });
 
   const wrap = document.getElementById("daemon-editor-wrap")!;
-  daemonEditor = createEditor(wrap, "", () => deck?.deployedCards ?? [], () => devUnlocks);
+  const savedCode = loadDaemonCode() ?? "";
+  daemonEditor = createEditor(wrap, savedCode, () => deck?.deployedCards ?? [], () => devUnlocks);
   daemonEditor.onDidFocusEditorWidget(() => { lastFocused = daemonEditor; });
+  daemonEditor.onDidChangeModelContent(() => debouncedSaveDaemonCode());
+}
+
+function loadDaemonCode(): string | null {
+  try {
+    return localStorage.getItem("runtime_rogue_daemon_code");
+  } catch {
+    return null;
+  }
+}
+
+let daemonSaveTimer: ReturnType<typeof setTimeout> | null = null;
+function debouncedSaveDaemonCode(): void {
+  if (daemonSaveTimer) clearTimeout(daemonSaveTimer);
+  daemonSaveTimer = setTimeout(() => {
+    if (tutorialMode) return; // チュートリアル中は上書きしない
+    try {
+      localStorage.setItem("runtime_rogue_daemon_code", getCode(daemonEditor));
+    } catch {
+      // ignore storage errors
+    }
+  }, 200);
 }
 
 function updateDaemonDisplay(): void {
@@ -1112,7 +1137,26 @@ function endTutorialAndReturn(): void {
 
 // ── バトル開始（ステージ切り替えでも呼ばれる） ─────────────────────
 
-function startBattle(): void {
+function describeGimmick(g: StageGimmick): string {
+  switch (g.kind) {
+    case "overkill":
+      return `過負荷反撃: 1ターンの合計与ダメージが${g.threshold}以上になると、次の敵の行動が${g.multiplier}倍に強化される`;
+    case "monotony":
+      return `単眼看破: 同じ関数を${g.streakThreshold}回連続で呼ぶと、敵が即座にブロック+${g.blockGain}を得る`;
+    case "overguard":
+      return `装甲貫通: ターン終了時に自分のブロックが${g.threshold}以上残っていると、次の敵攻撃はブロックを無視する`;
+    case "overcastSeal":
+      return `詠唱封印: コンボ数が${g.comboThreshold}に達すると、そのターン中はコンボが増加しなくなる`;
+    case "burstSpike":
+      return `禁忌の一撃: 1回のカード呼び出しで${g.threshold}以上のダメージを与えると、次の敵の行動が${g.multiplier}倍に強化される`;
+    case "imbalance":
+      return `見切りの一撃: コンボ数が${g.threshold}に達した状態からさらに増やすたび、${g.damage}ダメージを受ける`;
+    case "enrage":
+      return `覚醒: ${g.turnThreshold}ターンを超えると、以降は敵の行動が徐々に強化され、コンボ増加量も減っていく`;
+  }
+}
+
+async function startBattle(): Promise<void> {
   const stage = activeStages[currentStageIndex];
   currentIntentIndex = 0;
   const firstIntent = stage.intentPattern[0] ?? { kind: "attack", value: 6 };
@@ -1143,28 +1187,52 @@ function startBattle(): void {
     characterId: selectedCharacter.id,
     daemonCost: MAX_DAEMON_COST,
     maxDaemonCost: MAX_DAEMON_COST,
+    damageDealtThisTurn: 0,
+    sameActionKind: null,
+    sameActionStreak: 0,
+    maxSingleHitThisTurn: 0,
   };
   deck = new Deck([...deckCards]);
   over = false;
-  busy = false;
+  busy = true; // 戦闘開始時Daemon実行が終わるまで操作させない
+  setAllRunButtons(false);
   entries.forEach(e => { e.autorun = false; updateAutoBtn(e); });
-  setCode(daemonEditor, "");
   updateDaemonDisplay();
 
   setEnemyName(stage.isBoss ? `👑 ${stage.name}` : stage.name);
   setStageLabel(currentStageIndex, totalStages(), !!stage.isBoss);
   setDeckCount(deckCards.length);
+  setGimmick(stage.gimmick);
   clearLog();
   clearConsoleLog();
   appendLog(`=== ${stage.name} ===`, "sys");
   appendLog(`デッキ: ${deckCards.length} 枚`, "sys");
+  if (stage.gimmick) {
+    appendLog(`⚙ ギミック: ${describeGimmick(stage.gimmick)}`, "sys");
+  }
   entries.forEach(e => { e.errorEl.textContent = ""; });
 
   // 毎ターン開始時に5枚ドロー（1ターン目分をここで実行）
   deck.draw(HAND_SIZE);
   appendLog(`─── ターン 1 ───`, "sys");
   render(state, deck);
-  restoreButtons();
+
+  // 戦闘開始時にもDaemonを1回実行する（デプロイ済みが0枚なら実質何もしない）
+  const characterCards = getAllCharacterCards(selectedCharacter);
+  const libraryCode = entries
+    .filter(e => e.kind === "library")
+    .map(e => getCode(e.editor))
+    .filter(c => c.trim())
+    .join("\n\n") || undefined;
+  const snap = devUnlocks.deckInfo ? getDeckSnapshot() : undefined;
+  const result = await runUserCode(
+    "", state, deck.hand, devUnlocks, snap, 10000, libraryCode,
+    deck.drawPile, deck.discardPile, characterCards,
+    stage.intentPattern, currentIntentIndex,
+    getCode(daemonEditor), [...deck.deployedCards],
+    undefined, true, stage.gimmick,
+  );
+  await processRunResult(result);
 }
 
 
@@ -1234,14 +1302,37 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
     const isHeal = action.kind === "heal" || action.kind === "block" ||
                    action.kind === "lrBlock" || action.kind === "reboot" ||
                    action.kind === "patch" || action.kind === "initialize" ||
-                   action.kind === "sleep" || action.kind === "incrementalBlock" ||
-                   action.kind === "conditionalBlock" || action.kind === "bufferOverflowProtection";
+                   action.kind === "incrementalBlock" ||
+                   action.kind === "bufferOverflowProtection" ||
+                   action.kind === "overclockBurst";
     appendLog(action.viaDaemon ? `🤖 ${text}` : text, isHeal ? "heal" : "dmg");
     render(state, deck, getDisabledCards());
     if (action.viaDaemon) updateDaemonDisplay();
     await sleep(action.viaDaemon ? 60 : 180);
     if (state.enemy.hp <= 0) break;
   }
+
+  // deploy() 等、actions配列を経由しないMain Clock変動を最終的に同期する
+  if (result.finalEnergy !== undefined) state.energy = result.finalEnergy;
+
+  // comboCount等の「ターン中持続するメタ状態」はactions配列を経由せずワーカー内でのみ
+  // 更新されるため、複数回RUNしても引き継がれるようここで明示的に同期する
+  // （Daemon/Main Thread間で共有されるのもこの同期によって成立する）
+  if (result.finalState) {
+    state.comboCount         = result.finalState.comboCount;
+    state.comboIncrement     = result.finalState.comboIncrement;
+    state.asyncAwaitActive   = result.finalState.asyncAwaitActive;
+    state.uniqueUsedThisTurn = result.finalState.uniqueUsedThisTurn;
+    state.costZeroCardIds    = result.finalState.costZeroCardIds;
+    state.costReductionMap   = result.finalState.costReductionMap;
+    state.cachedCardId       = result.finalState.cachedCardId;
+    state.rebootUsedThisTurn = result.finalState.rebootUsedThisTurn;
+    state.sameActionKind       = result.finalState.sameActionKind;
+    state.sameActionStreak     = result.finalState.sameActionStreak;
+    state.maxSingleHitThisTurn = result.finalState.maxSingleHitThisTurn;
+  }
+
+  updateDaemonDisplay();
 
   if (result.error) {
     if (entry) {
@@ -1284,14 +1375,6 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
     return;
   }
 
-  // Recursion: reset uniqueUsedThisTurn and re-run
-  if (result.recursionTriggered && entry) {
-    appendLog("recursion: プログラムを再実行", "sys");
-    state.uniqueUsedThisTurn = [];
-    busy = false;
-    await onRun(entry);
-    return;
-  }
 
   busy = false;
   restoreButtons();
@@ -1323,7 +1406,7 @@ async function onRun(entry: EditorEntry): Promise<void> {
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
     getCode(daemonEditor), [...deck.deployedCards],
-    allowedFns,
+    allowedFns, false, stage.gimmick,
   );
   await processRunResult(result, entry);
 }
@@ -1337,12 +1420,19 @@ async function onEndTurn(): Promise<void> {
 
   const characterCards = getAllCharacterCards(selectedCharacter);
   const stage          = activeStages[currentStageIndex];
+  const libraryCode = entries
+    .filter(e => e.kind === "library")
+    .map(e => getCode(e.editor))
+    .filter(c => c.trim())
+    .join("\n\n") || undefined;
+  const snap = devUnlocks.deckInfo ? getDeckSnapshot() : undefined;
 
   const result = await runUserCode(
-    "endTurn();", state, deck.hand, devUnlocks, undefined, 10000, undefined,
+    "endTurn();", state, deck.hand, devUnlocks, snap, 10000, libraryCode,
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
     getCode(daemonEditor), [...deck.deployedCards],
+    undefined, false, stage.gimmick,
   );
   await processRunResult(result);
 }
@@ -1433,9 +1523,9 @@ function buildReferenceModal(): void {
       title: "🗡 スターターカード",
       color: "var(--enemy)",
       items: [
-        { sig: "attack()", cost: "1", desc: "敵に 6 ダメージ", example: "attack();" },
-        { sig: "block()",  cost: "1", desc: "ブロック +5",       example: "block();" },
-        { sig: "quickScan()", cost: "1", desc: "3ダメージ＋1枚ドロー", example: "quickScan();" },
+        { sig: "attack()", cost: "1", desc: "敵に 3+⌊combo/3⌋ ダメージ", example: "attack();" },
+        { sig: "block()",  cost: "1", desc: "ブロック +max(2, 5-⌊combo/2⌋)", example: "block();" },
+        { sig: "noop()",   cost: "0", desc: "何もしない（コンボ +1 のみ）", example: "noop();" },
       ],
     },
     {
@@ -1447,36 +1537,30 @@ function buildReferenceModal(): void {
         { sig: "myBlock()",     cost: "0", desc: "自分の現在ブロック量を返す", example: "if (myBlock() < 5) block();" },
         { sig: "mainClock()",   cost: "0", desc: "残り Main Clock を返す", example: "while (mainClock() !== 0) attack();" },
         { sig: "daemonCost()",  cost: "0", desc: "残り Daemon Cost を返す（Daemon内で使用）", example: "if (daemonCost() >= 1) attack();" },
-        { sig: "enemyBlock()",  cost: "0", desc: "敵の現在ブロック量を返す", example: "if (enemyBlock() > 0) ping();" },
-        { sig: "enemyIntent()", cost: "0", desc: "敵の次の行動 {kind, value}", example: 'if (enemyIntent().kind === "attack") block();' },
+        { sig: "enemyBlock()",  cost: "0", desc: "敵の現在ブロック量を返す", example: "if (enemyBlock() > 0) attack();" },
+        { sig: "enemyIntent()", cost: "0", desc: "敵の次の行動 {kind, value, boosted?, ignoresBlock?}", example: 'if (enemyIntent().kind === "attack") block();' },
+        { sig: "damageDealtThisTurn()", cost: "0", desc: "このターン敵に与えた合計ダメージを返す", example: "if (damageDealtThisTurn() < 25) attack();" },
+        { sig: "sameActionStreak()", cost: "0", desc: "同じ関数を連続で呼んだ回数を返す", example: "if (sameActionStreak() >= 3) block();" },
+        { sig: "comboIncrement()", cost: "0", desc: "コンボが1回の使用で増加する量を返す（0なら増加停止中）", example: "if (comboIncrement() > 0) noop();" },
+        { sig: "turn()", cost: "0", desc: "現在のターン数を返す", example: "if (turn() > 10) attack();" },
       ],
     },
     {
       title: "✨ カード一覧",
       color: "var(--energy)",
       items: [
-        { sig: "noop()",        cost: "0", desc: "何もしない（コンボ +1）" },
-        { sig: "shift()",       cost: "0", desc: "手札1枚捨て、1枚ドロー" },
         { sig: "overClock()",   cost: "0", desc: "HP -2、エネルギー+1" },
         { sig: "patch()",       cost: "0", desc: "HP +2 回復（使い捨て）" },
-        { sig: "initialize()",  cost: "1", desc: "ブロック+3、次ターンエネルギー+1・ドロー+1" },
-        { sig: "sleep()",       cost: "1", desc: "ブロック+3、次ターンエネルギー+1" },
-        { sig: "forceQuit()",   cost: "1", desc: "4ダメージ、次ターンドロー+2" },
-        { sig: "ping()",        cost: "1", desc: "コンボ数ダメージ" },
-        { sig: "refactoring()", cost: "1", desc: "手札の最高コスト2枚を-1" },
-        { sig: "incrementalAttack()", cost: "2", desc: "8ダメージ（奇数コンボなら+4）" },
-        { sig: "conditionalBlock()",  cost: "1", desc: "ブロック+2（偶数コンボなら+5）" },
+        { sig: "initialize()",  cost: "1", desc: "ブロック+3、次ターンエネルギー+1" },
+        { sig: "forceQuit()",   cost: "1", desc: "4ダメージ、実行を終了する" },
+        { sig: "incrementalAttack()", cost: "2", desc: "コンボ数×2ダメージ" },
         { sig: "bufferOverflowProtection()", cost: "1", desc: "手札1枚捨て、ブロック+3" },
-        { sig: "asyncDraw()",   cost: "1", desc: "1枚ドロー（コンボ5以上で3枚）" },
-        { sig: "caching()",     cost: "0", desc: "最高コストカードを次ターンコスト0で持ち越し" },
-        { sig: "multiThreading()", cost: "2", desc: "コンボ+3、1枚ドロー" },
+        { sig: "asyncDraw()",   cost: "1", desc: "2枚ドロー" },
         { sig: "incrementalBlock()", cost: "2", desc: "ブロック+コンボ数" },
-        { sig: "garbageCollection()", cost: "1", desc: "捨て札の通常カードを回収、エネルギー+1（使い捨て）" },
-        { sig: "recursion()",   cost: "3", desc: "プログラムを再実行（使い捨て）" },
-        { sig: "asyncAwait()",  cost: "2", desc: "以降の攻撃にコンボ数分の追加ダメージ（使い捨て）" },
-        { sig: "stackOverflow()", cost: "1", desc: "HP -5、コンボ増加が×3に（使い捨て）" },
         { sig: "execute()",     cost: "3", desc: "敵HP ≤ コンボ×3 なら即死" },
         { sig: "compilerOptimization()", cost: "2", desc: "3枚ドロー、通常カードのコスト0" },
+        { sig: "overclockBurst()", cost: "0", desc: "エネルギー全回復、コンボ+3" },
+        { sig: "stackOverflow()", cost: "2", desc: "【Fatal】HP -3、コンボ増加が+5に" },
       ],
     },
   ];

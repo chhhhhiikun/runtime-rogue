@@ -57,13 +57,19 @@ declare function myBlock(): number;
 declare function mainClock(): number;
 declare function daemonCost(): number;
 declare function enemyBlock(): number;
-declare function enemyIntent(): { kind: "attack" | "block"; value: number };
+declare function enemyIntent(): { kind: "attack" | "block"; value: number; boosted?: boolean; ignoresBlock?: boolean };
 declare function comboCount(): number;
+declare function damageDealtThisTurn(): number;
+declare function sameActionStreak(): number;
+declare function comboIncrement(): number;
+declare function turn(): number;
 declare function isUsable(fn: string): boolean;
+declare function deploy(fn: string): void;
 declare function myHand(): string[];
 declare function myDeck(): string[];
 declare function myDrawPile(): string[];
 declare function myDiscard(): string[];
+declare function myDeployed(): string[];
 declare function endTurn(): void;
 declare function attack(): void;
 declare function block(): void;
@@ -86,7 +92,12 @@ const READ_ITEMS: Array<{ label: string; insert: string; detail: string; doc: st
   { label: "enemyBlock",  insert: "enemyBlock()",  detail: "() → number",       doc: "敵の現在ブロック量" },
   { label: "enemyIntent", insert: "enemyIntent()", detail: "() → {kind,value}", doc: "敵の次の行動" },
   { label: "comboCount",  insert: "comboCount()",  detail: "() → number",       doc: "現在のコンボカウンター値" },
+  { label: "damageDealtThisTurn", insert: "damageDealtThisTurn()", detail: "() → number", doc: "このターン敵に与えた合計ダメージ" },
+  { label: "sameActionStreak",    insert: "sameActionStreak()",    detail: "() → number", doc: "同じ関数を連続で呼んだ回数" },
+  { label: "comboIncrement",      insert: "comboIncrement()",      detail: "() → number", doc: "コンボが1回の使用で増加する量（0なら増加停止中）" },
+  { label: "turn",                insert: "turn()",                detail: "() → number", doc: "現在のターン数" },
   { label: "isUsable",    insert: "isUsable(\"${1:attack}\")", detail: "(fn: string) → boolean", doc: "そのカードが今のターン使用可能かどうか（Unique使用済み等はfalse）" },
+  { label: "deploy",      insert: "deploy(\"${1:attack}\")",   detail: "(fn: string) → void",    doc: "手札のカードをDaemonへ常駐化する（コスト: 基礎コスト×2をMain Clockから消費）" },
 ];
 
 const DECK_INFO_ITEMS: Array<{ label: string; insert: string; detail: string; doc: string }> = [
@@ -94,6 +105,7 @@ const DECK_INFO_ITEMS: Array<{ label: string; insert: string; detail: string; do
   { label: "myHand",     insert: "myHand()",     detail: "() → CardId[]", doc: "現在の手札" },
   { label: "myDrawPile", insert: "myDrawPile()", detail: "() → CardId[]", doc: "山札（ドロー待ちカード）" },
   { label: "myDiscard",  insert: "myDiscard()",  detail: "() → CardId[]", doc: "捨て札" },
+  { label: "myDeployed", insert: "myDeployed()", detail: "() → CardId[]", doc: "Daemonにデプロイ済みのカード" },
 ];
 
 const END_TURN_ITEM = {
@@ -142,12 +154,13 @@ function ensureProvider(): void {
         });
 
       const readItems = READ_ITEMS.map((item, i) => ({
-        label:         item.label,
-        kind:          monaco.languages.CompletionItemKind.Function,
-        detail:        item.detail,
-        documentation: item.doc,
-        insertText:    item.insert,
-        sortText:      `1${String(i).padStart(3, "0")}`,
+        label:            item.label,
+        kind:             monaco.languages.CompletionItemKind.Function,
+        detail:           item.detail,
+        documentation:    item.doc,
+        insertText:       item.insert,
+        insertTextRules:  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+        sortText:         `1${String(i).padStart(3, "0")}`,
         range,
       }));
 

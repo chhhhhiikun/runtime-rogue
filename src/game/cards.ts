@@ -1,4 +1,4 @@
-export type Rarity = "starter" | "common" | "uncommon" | "rare";
+export type Rarity = "starter" | "common" | "uncommon" | "rare" | "fatal";
 export type CardAttribute = "unique" | "disposable";
 
 export type CardId =
@@ -7,15 +7,15 @@ export type CardId =
   | "pierce" | "shatter"
   | "drain" | "nullify" | "overload" | "reboot" | "combo" | "debug" | "cycler"
   // Loop Runner Starter
-  | "lrAttack" | "lrBlock" | "quickScan"
+  | "lrAttack" | "lrBlock" | "noop"
   // Loop Runner Common
-  | "initialize" | "noop" | "shift" | "sleep" | "forceQuit" | "overClock"
-  | "ping" | "incrementalAttack" | "refactoring" | "patch"
+  | "initialize" | "forceQuit" | "overClock" | "incrementalAttack" | "patch"
   // Loop Runner Uncommon
-  | "incrementalBlock" | "conditionalBlock" | "bufferOverflowProtection"
-  | "asyncDraw" | "caching" | "multiThreading" | "garbageCollection"
+  | "incrementalBlock" | "bufferOverflowProtection" | "asyncDraw"
   // Loop Runner Rare
-  | "recursion" | "asyncAwait" | "stackOverflow" | "lrExecute" | "compilerOptimization";
+  | "lrExecute" | "compilerOptimization" | "overclockBurst"
+  // Loop Runner Fatal
+  | "stackOverflow";
 
 export interface CardDef {
   id: CardId;
@@ -129,45 +129,27 @@ export const CARDS: Record<CardId, CardDef> = {
   lrBlock: {
     id: "lrBlock", fn: "block",
     signature: "block()",
-    description: "ブロック +5。コスト: 1",
+    description: "ブロック +max(2, 5-⌊combo/2⌋)。コンボが増えるほど効果ダウン。コスト: 1",
     rarity: "starter", attributes: [],
   },
-  quickScan: {
-    id: "quickScan", fn: "quickScan",
-    signature: "quickScan()",
-    description: "敵に 3 ダメージ＋カード 1 枚引く。コスト: 1",
-    rarity: "starter", attributes: [],
+  noop: {
+    id: "noop", fn: "noop",
+    signature: "noop()",
+    description: "何もしない（コンボ +1 のみ）。コスト: 0",
+    rarity: "starter", attributes: ["unique"],
   },
 
   // ─── Loop Runner Common ───────────────────────────────────────
   initialize: {
     id: "initialize", fn: "initialize",
     signature: "initialize()",
-    description: "ブロック +3。次ターン開始時エネルギー+1・ドロー+1。コスト: 1",
-    rarity: "common", attributes: [],
-  },
-  noop: {
-    id: "noop", fn: "noop",
-    signature: "noop()",
-    description: "何もしない（コンボ +1 のみ）。コスト: 0",
-    rarity: "common", attributes: ["unique"],
-  },
-  shift: {
-    id: "shift", fn: "shift",
-    signature: "shift()",
-    description: "手札を 1 枚捨て、カードを 1 枚引く。コスト: 0",
-    rarity: "common", attributes: ["unique"],
-  },
-  sleep: {
-    id: "sleep", fn: "sleep",
-    signature: "sleep()",
     description: "ブロック +3。次ターン開始時エネルギー +1。コスト: 1",
     rarity: "common", attributes: [],
   },
   forceQuit: {
     id: "forceQuit", fn: "forceQuit",
     signature: "forceQuit()",
-    description: "敵に 4 ダメージ。実行を終了し次ターンのドロー +2。コスト: 1",
+    description: "敵に 4 ダメージ。実行を終了する。コスト: 1",
     rarity: "common", attributes: [],
   },
   overClock: {
@@ -176,22 +158,10 @@ export const CARDS: Record<CardId, CardDef> = {
     description: "自分 HP -2 してエネルギー +1。コスト: 0",
     rarity: "common", attributes: [],
   },
-  ping: {
-    id: "ping", fn: "ping",
-    signature: "ping()",
-    description: "敵にコンボ数 × 1 ダメージ。コスト: 1",
-    rarity: "common", attributes: [],
-  },
   incrementalAttack: {
     id: "incrementalAttack", fn: "incrementalAttack",
     signature: "incrementalAttack()",
-    description: "敵に 8 ダメージ。コンボ数が奇数なら追加 4 ダメージ。コスト: 2",
-    rarity: "common", attributes: [],
-  },
-  refactoring: {
-    id: "refactoring", fn: "refactoring",
-    signature: "refactoring()",
-    description: "手札で最もコストが高いカード 2 枚のコストを -1（最低 1）。コスト: 1",
+    description: "敵にコンボ数 × 2 ダメージ。コスト: 2",
     rarity: "common", attributes: [],
   },
   patch: {
@@ -208,12 +178,6 @@ export const CARDS: Record<CardId, CardDef> = {
     description: "ブロック +コンボ数。コスト: 2",
     rarity: "uncommon", attributes: ["unique"],
   },
-  conditionalBlock: {
-    id: "conditionalBlock", fn: "conditionalBlock",
-    signature: "conditionalBlock()",
-    description: "ブロック +2。コンボ数が偶数なら代わりにブロック +5。コスト: 1",
-    rarity: "uncommon", attributes: [],
-  },
   bufferOverflowProtection: {
     id: "bufferOverflowProtection", fn: "bufferOverflowProtection",
     signature: "bufferOverflowProtection()",
@@ -223,47 +187,11 @@ export const CARDS: Record<CardId, CardDef> = {
   asyncDraw: {
     id: "asyncDraw", fn: "asyncDraw",
     signature: "asyncDraw()",
-    description: "カードを 1 枚引く。コンボ数が 5 以上なら 3 枚引く。コスト: 1",
+    description: "カードを 2 枚引く。コスト: 1",
     rarity: "uncommon", attributes: [],
-  },
-  caching: {
-    id: "caching", fn: "caching",
-    signature: "caching()",
-    description: "手札の最高コストカードを次ターンにコスト 0 で持ち越す。コスト: 0",
-    rarity: "uncommon", attributes: ["unique"],
-  },
-  multiThreading: {
-    id: "multiThreading", fn: "multiThreading",
-    signature: "multiThreading()",
-    description: "コンボ +3（自身の +1 含む）、カード 1 枚引く。コスト: 2",
-    rarity: "uncommon", attributes: ["unique"],
-  },
-  garbageCollection: {
-    id: "garbageCollection", fn: "garbageCollection",
-    signature: "garbageCollection()",
-    description: "捨て札の通常カードを 1 枚コスト 0 で手札に戻す。エネルギー +1。コスト: 1",
-    rarity: "uncommon", attributes: ["disposable"],
   },
 
   // ─── Loop Runner Rare ─────────────────────────────────────────
-  recursion: {
-    id: "recursion", fn: "recursion",
-    signature: "recursion()",
-    description: "プログラムを先頭から再実行。再実行中は Unique フラグがリセットされる。エネルギー引き継ぎ。コスト: 3",
-    rarity: "rare", attributes: ["unique", "disposable"],
-  },
-  asyncAwait: {
-    id: "asyncAwait", fn: "asyncAwait",
-    signature: "asyncAwait()",
-    description: "以降の全攻撃に現在のコンボ数分の追加ダメージ。コスト: 2",
-    rarity: "rare", attributes: ["disposable"],
-  },
-  stackOverflow: {
-    id: "stackOverflow", fn: "stackOverflow",
-    signature: "stackOverflow()",
-    description: "自分 HP -5。このターン中コンボ増加が +1 の代わりに +3 になる。コスト: 1",
-    rarity: "rare", attributes: ["disposable"],
-  },
   lrExecute: {
     id: "lrExecute", fn: "execute",
     signature: "execute()",
@@ -276,9 +204,23 @@ export const CARDS: Record<CardId, CardDef> = {
     description: "カード 3 枚引く。このターン手札の通常カード（属性なし）のコストを 0 にする。コスト: 2",
     rarity: "rare", attributes: ["unique"],
   },
+  overclockBurst: {
+    id: "overclockBurst", fn: "overclockBurst",
+    signature: "overclockBurst()",
+    description: "エネルギーを全回復し、コンボ +3 を得る。コスト: 0",
+    rarity: "rare", attributes: ["unique"],
+  },
+
+  // ─── Loop Runner Fatal（最上位・排出率1%）───────────────────────
+  stackOverflow: {
+    id: "stackOverflow", fn: "stackOverflow",
+    signature: "stackOverflow()",
+    description: "自分 HP -3。このターン中コンボ増加が +1 の代わりに +5 になる。コスト: 2",
+    rarity: "fatal", attributes: ["unique"],
+  },
 };
 
-export const HAND_SIZE = 5; // 毎ターン開始時に5枚ドロー（StS方式：山札切れで捨て札シャッフル）
+export const HAND_SIZE = 3; // 毎ターン開始時に3枚ドロー（StS方式：山札切れで捨て札シャッフル）
 
 // カードの基礎コスト（動的コストのカードは 0 を返す）。Deploy コスト計算にも使う。
 export function getCardBaseCost(id: CardId): number {
@@ -302,31 +244,22 @@ export function getCardBaseCost(id: CardId): number {
     // LR Starter
     case "lrAttack": return 1;
     case "lrBlock": return 1;
-    case "quickScan": return 1;
+    case "noop": return 0;
     // LR Common
     case "initialize": return 1;
-    case "noop": return 0;
-    case "shift": return 0;
-    case "sleep": return 1;
     case "forceQuit": return 1;
     case "overClock": return 0;
-    case "ping": return 1;
     case "incrementalAttack": return 2;
-    case "refactoring": return 1;
     case "patch": return 0;
     // LR Uncommon
     case "incrementalBlock": return 2;
-    case "conditionalBlock": return 1;
     case "bufferOverflowProtection": return 1;
     case "asyncDraw": return 1;
-    case "caching": return 0;
-    case "multiThreading": return 2;
-    case "garbageCollection": return 1;
     // LR Rare
-    case "recursion": return 3;
-    case "asyncAwait": return 2;
-    case "stackOverflow": return 1;
     case "lrExecute": return 3;
     case "compilerOptimization": return 2;
+    case "overclockBurst": return 0;
+    // LR Fatal
+    case "stackOverflow": return 2;
   }
 }

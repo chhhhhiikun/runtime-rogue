@@ -1,10 +1,28 @@
 import type { EnemyIntent } from "./state";
 
+// ステージごとの「対抗ギミック」。詳細は CLAUDE.md の「## 敵ギミック」参照。
+export type StageGimmick =
+  // 過負荷反撃（ウェアウルフ）: 1ターン合計被ダメが threshold 以上 → 次の意図の値を multiplier 倍にする
+  | { kind: "overkill"; threshold: number; multiplier: number }
+  // 単眼看破（サイクロプス）: 同じ関数を streakThreshold 回連続で呼ぶ → 敵が即座にブロック +blockGain を得る
+  | { kind: "monotony"; streakThreshold: number; blockGain: number }
+  // 装甲貫通（ゴーレム）: ターン終了時、自分ブロックが threshold 以上残っている → 次の敵攻撃はブロック無視
+  | { kind: "overguard"; threshold: number }
+  // 詠唱封印（魔道士）: コンボ数が comboThreshold に達する → そのターン中コンボ増加が0になる
+  | { kind: "overcastSeal"; comboThreshold: number }
+  // 禁忌の一撃（デーモン）: 1回のカード呼び出しでのダメージが threshold 以上 → 次の意図の値を multiplier 倍にする
+  | { kind: "burstSpike"; threshold: number; multiplier: number }
+  // 見切りの一撃（竜騎士）: コンボ数が threshold 以上の状態からさらに増加するたび、damage ダメージを受ける
+  | { kind: "imbalance"; threshold: number; damage: number }
+  // 覚醒（ドラゴン）: turnThreshold ターン超過後、超過ターンごとに次意図を強化しつつコンボ増加量を減衰させる
+  | { kind: "enrage"; turnThreshold: number; multiplierPerTurn: number; comboIncrementDecay: number };
+
 export interface StageDef {
   name: string;
   hp: number;
   intentPattern: EnemyIntent[];
   isBoss?: boolean;
+  gimmick?: StageGimmick;
 }
 
 // 基準: attack() コスト1・ダメージ6、エネルギー10 → 最大60ダメージ/ターン
@@ -54,7 +72,7 @@ export const STAGES: StageDef[] = [
     ],
   },
   {
-    // 約5ターン。連続高火力
+    // 約5ターン。連続高火力。過負荷反撃ギミック持ち
     name: "ウェアウルフ",
     hp: 360,
     intentPattern: [
@@ -64,6 +82,8 @@ export const STAGES: StageDef[] = [
       { kind: "block",  value: 10 },
       { kind: "attack", value: 18 },
     ],
+    // 1ターンで30以上のダメージを与えると、次の意図の値が2倍になる（無限ループの物量ゴリ押しへの牽制）
+    gimmick: { kind: "overkill", threshold: 30, multiplier: 2 },
   },
   {
     // 約6〜7ターン。超高火力
@@ -76,6 +96,8 @@ export const STAGES: StageDef[] = [
       { kind: "attack", value: 20 },
       { kind: "block",  value: 10 },
     ],
+    // 同じ関数を4回連続で呼ぶと、単調なループを見破られ敵が即座にブロック+8を得る
+    gimmick: { kind: "monotony", streakThreshold: 4, blockGain: 8 },
   },
   {
     // 約8ターン。重ブロック主体
@@ -88,6 +110,8 @@ export const STAGES: StageDef[] = [
       { kind: "attack", value: 18 },
       { kind: "attack", value: 12 },
     ],
+    // ターン終了時に自分ブロックが15以上残っていると、次の敵攻撃はブロックを無視する（過剰な籠城への牽制）
+    gimmick: { kind: "overguard", threshold: 15 },
   },
   {
     // 約9〜10ターン
@@ -100,6 +124,8 @@ export const STAGES: StageDef[] = [
       { kind: "attack", value: 22 },
       { kind: "block",  value: 10 },
     ],
+    // コンボ数が12に達すると、そのターン中はそれ以上コンボが増加しなくなる（無限コンボ積みへの牽制）
+    gimmick: { kind: "overcastSeal", comboThreshold: 12 },
   },
   {
     // 約11ターン。猛攻
@@ -112,6 +138,8 @@ export const STAGES: StageDef[] = [
       { kind: "block",  value: 16 },
       { kind: "attack", value: 24 },
     ],
+    // 1回の呼び出しで25以上のダメージを与えると（コンボを盛った大技等）、次の意図の値が1.5倍になる
+    gimmick: { kind: "burstSpike", threshold: 25, multiplier: 1.5 },
   },
   {
     // 約13ターン。攻防バランス型
@@ -125,6 +153,8 @@ export const STAGES: StageDef[] = [
       { kind: "attack", value: 24 },
       { kind: "attack", value: 14 },
     ],
+    // コンボ数が10に達した状態からさらに増加させるたび、見切られて2ダメージを受ける（無理な連撃への牽制）
+    gimmick: { kind: "imbalance", threshold: 10, damage: 2 },
   },
   {
     // ボス。約15〜20ターン想定
@@ -139,5 +169,7 @@ export const STAGES: StageDef[] = [
       { kind: "attack", value: 30 },
     ],
     isBoss: true,
+    // 15ターンを超えると、超過ターンごとに次意図が緩やかに強化されつつコンボ増加量も減衰していく（長期戦への牽制）
+    gimmick: { kind: "enrage", turnThreshold: 15, multiplierPerTurn: 0.08, comboIncrementDecay: 0.3 },
   },
 ];

@@ -17,30 +17,24 @@ export type ActionCore =
   | { kind: "combo";     n: number; k: number; cost: number }
   // Loop Runner actions
   | { kind: "lrAttack"; cost: number; comboCount: number }
-  | { kind: "lrBlock"; cost: number }
-  | { kind: "quickScan"; cost: number }
+  | { kind: "lrBlock"; cost: number; comboCount: number }
   | { kind: "initialize"; cost: number }
   | { kind: "noop"; cost: number }
-  | { kind: "shift"; cost: number }
-  | { kind: "sleep"; cost: number }
   | { kind: "forceQuit"; cost: number }
   | { kind: "overClock"; cost: number }
-  | { kind: "ping"; cost: number; comboCount: number }
   | { kind: "incrementalAttack"; cost: number; comboCount: number }
-  | { kind: "refactoring"; cost: number }
   | { kind: "patch"; cost: number }
   | { kind: "incrementalBlock"; cost: number; comboCount: number }
-  | { kind: "conditionalBlock"; cost: number; comboCount: number }
   | { kind: "bufferOverflowProtection"; cost: number }
   | { kind: "asyncDraw"; cost: number }
-  | { kind: "caching"; cost: number }
-  | { kind: "multiThreading"; cost: number }
-  | { kind: "garbageCollection"; cost: number }
-  | { kind: "recursion"; cost: number }
-  | { kind: "asyncAwait"; cost: number }
   | { kind: "stackOverflow"; cost: number }
   | { kind: "lrExecute"; cost: number; comboCount: number }
   | { kind: "compilerOptimization"; cost: number }
+  | { kind: "overclockBurst"; cost: number }
+  // 敵ギミックによるプレイヤーへの即時ダメージ（竜騎士「見切りの一撃」等。コストは発生しない）
+  | { kind: "gimmickDamage"; amount: number; label: string }
+  // 敵ギミックによる敵への即時ブロック付与（サイクロプス「単眼看破」等。コストは発生しない）
+  | { kind: "gimmickBlock"; amount: number; label: string }
   // ターン境界（敵ターン処理）
   | { kind: "enemyTurn"; intent: EnemyIntent; nextIntent: EnemyIntent; label: string; poisonDmg: number };
 
@@ -55,6 +49,7 @@ function damageEnemy(s: CombatState, raw: number): number {
     dmg -= absorbed;
   }
   s.enemy.hp = Math.max(0, s.enemy.hp - dmg);
+  s.damageDealtThisTurn += dmg;
   return dmg;
 }
 
@@ -77,7 +72,7 @@ export function applyAction(
       s.enemy.block += a.intent.value;
     } else {
       let dmg = a.intent.value;
-      if (s.player.block > 0) {
+      if (!a.intent.ignoresBlock && s.player.block > 0) {
         const absorbed = Math.min(s.player.block, dmg);
         s.player.block -= absorbed;
         dmg -= absorbed;
@@ -94,8 +89,31 @@ export function applyAction(
     s.uniqueUsedThisTurn = [];
     s.costZeroCardIds    = [];
     s.costReductionMap   = {};
+    s.daemonCost         = s.maxDaemonCost;
+    s.damageDealtThisTurn = 0;
+    s.sameActionKind      = null;
+    s.sameActionStreak    = 0;
+    s.maxSingleHitThisTurn = 0;
     s.turn++;
     s.enemy.intent = { ...a.nextIntent };
+    return a.label;
+  }
+
+  // gimmickDamage はコストを消費しない、敵ギミックによるプレイヤーへの直接ダメージ
+  if (a.kind === "gimmickDamage") {
+    let dmg = a.amount;
+    if (s.player.block > 0) {
+      const absorbed = Math.min(s.player.block, dmg);
+      s.player.block -= absorbed;
+      dmg -= absorbed;
+    }
+    s.player.hp = Math.max(0, s.player.hp - dmg);
+    return a.label;
+  }
+
+  // gimmickBlock はコストを消費しない、敵ギミックによる敵への直接ブロック付与
+  if (a.kind === "gimmickBlock") {
+    s.enemy.block += a.amount;
     return a.label;
   }
 
@@ -182,55 +200,32 @@ export function applyAction(
       return `attack: 敵に ${dealt} ダメージ (combo:${a.comboCount})`;
     }
     case "lrBlock": {
-      s.player.block += 5;
-      return `block: ブロック +5`;
-    }
-    case "quickScan": {
-      const raw   = vulnDmg(s, 3);
-      const dealt = damageEnemy(s, raw);
-      return `quickScan: 敵に ${dealt} ダメージ`;
+      const amount = Math.max(2, 5 - Math.floor(a.comboCount / 2));
+      s.player.block += amount;
+      return `block: ブロック +${amount} (combo:${a.comboCount})`;
     }
     case "initialize": {
       s.player.block += 3;
-      s.nextTurnExtraDraws++;
       s.nextTurnExtraEnergy++;
-      return `initialize: ブロック +3、次ターンエネルギー+1・ドロー+1`;
+      return `initialize: ブロック +3、次ターンエネルギー+1`;
     }
     case "noop": {
       return `noop: 何もしない`;
     }
-    case "shift": {
-      return `shift: 手札1枚捨て、1枚ドロー`;
-    }
-    case "sleep": {
-      s.player.block += 3;
-      s.nextTurnExtraEnergy++;
-      return `sleep: ブロック +3、次ターンエネルギー+1`;
-    }
     case "forceQuit": {
       const raw   = vulnDmg(s, 4);
       const dealt = damageEnemy(s, raw);
-      s.nextTurnExtraDraws += 2;
-      return `forceQuit: 敵に ${dealt} ダメージ、次ターンドロー+2`;
+      return `forceQuit: 敵に ${dealt} ダメージ、実行を終了`;
     }
     case "overClock": {
       s.player.hp = Math.max(0, s.player.hp - 2);
       s.energy += 1;
       return `overClock: HP -2、エネルギー+1`;
     }
-    case "ping": {
-      const raw   = vulnDmg(s, a.comboCount);
-      const dealt = damageEnemy(s, raw);
-      return `ping: 敵に ${dealt} ダメージ（コンボ×1）`;
-    }
     case "incrementalAttack": {
-      const bonus = a.comboCount % 2 !== 0 ? 4 : 0;
-      const raw   = vulnDmg(s, 8 + bonus);
+      const raw   = vulnDmg(s, a.comboCount * 2);
       const dealt = damageEnemy(s, raw);
-      return `incrementalAttack: 敵に ${dealt} ダメージ${bonus ? "（奇数コンボ +4）" : ""}`;
-    }
-    case "refactoring": {
-      return `refactoring: 手札の最高コスト2枚のコスト-1`;
+      return `incrementalAttack: 敵に ${dealt} ダメージ（コンボ×2）`;
     }
     case "patch": {
       s.player.hp = Math.min(s.player.maxHp, s.player.hp + 2);
@@ -240,39 +235,17 @@ export function applyAction(
       s.player.block += a.comboCount;
       return `incrementalBlock: ブロック +${a.comboCount}（コンボ数）`;
     }
-    case "conditionalBlock": {
-      const amount = a.comboCount % 2 === 0 ? 5 : 2;
-      s.player.block += amount;
-      return `conditionalBlock: ブロック +${amount}`;
-    }
     case "bufferOverflowProtection": {
       s.player.block += 3;
       return `bufferOverflowProtection: ブロック +3`;
     }
     case "asyncDraw": {
-      return `asyncDraw: カードをドロー`;
-    }
-    case "caching": {
-      return `caching: 最高コストカードを次ターンに持ち越し`;
-    }
-    case "multiThreading": {
-      return `multiThreading: コンボ+3、1枚ドロー`;
-    }
-    case "garbageCollection": {
-      s.energy += 1;
-      return `garbageCollection: 捨て札から1枚回収、エネルギー+1`;
-    }
-    case "recursion": {
-      return `recursion: プログラム再実行`;
-    }
-    case "asyncAwait": {
-      s.asyncAwaitActive = true;
-      return `asyncAwait: 以降の攻撃にコンボ数分の追加ダメージ`;
+      return `asyncDraw: カードを2枚ドロー`;
     }
     case "stackOverflow": {
-      s.player.hp = Math.max(0, s.player.hp - 5);
-      s.comboIncrement = 3;
-      return `stackOverflow: HP -5、コンボ増加が×3に`;
+      s.player.hp = Math.max(0, s.player.hp - 3);
+      s.comboIncrement = 5;
+      return `stackOverflow: HP -3、コンボ増加が+5に`;
     }
     case "lrExecute": {
       if (s.enemy.hp <= a.comboCount * 3) {
@@ -283,6 +256,12 @@ export function applyAction(
     }
     case "compilerOptimization": {
       return `compilerOptimization: 3枚ドロー、通常カードのコスト0`;
+    }
+    case "overclockBurst": {
+      const gained = s.maxEnergy - s.energy;
+      s.energy = s.maxEnergy;
+      s.comboCount += 3;
+      return `overclockBurst: エネルギー +${gained}（全回復）、コンボ+3`;
     }
 
   }
