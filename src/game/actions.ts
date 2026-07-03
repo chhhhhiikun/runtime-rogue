@@ -194,7 +194,9 @@ export function applyAction(
 
     // ── Loop Runner ──────────────────────────────────────────────
     case "lrAttack": {
-      const dmg  = 3 + Math.floor(a.comboCount / 3);
+      // combo火力にキャップ(+3)を設け、単純連打による青天井の火力インフレを抑える。
+      // 爆発力は incrementalAttack() など専用カードで出す設計。
+      const dmg  = 3 + Math.min(3, Math.floor(a.comboCount / 4));
       const raw   = vulnDmg(s, dmg);
       const dealt = damageEnemy(s, raw);
       return `attack: 敵に ${dealt} ダメージ (combo:${a.comboCount})`;

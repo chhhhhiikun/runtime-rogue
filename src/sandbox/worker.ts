@@ -592,13 +592,24 @@ function run(req: RunRequest): RunResult {
 
       // enemyTurn アクションを記録（main.ts側でアニメーション再生用）
       const currentIntent = { ...state.enemy.intent };
+
+      // 実際に与えられるダメージ（ブロック軽減後）を先に計算し、ログに反映する
+      let actualDmg = currentIntent.value;
+      let blockedAmount = 0;
+      if (currentIntent.kind === "attack") {
+        if (!currentIntent.ignoresBlock && state.player.block > 0) {
+          blockedAmount = Math.min(state.player.block, actualDmg);
+          actualDmg -= blockedAmount;
+        }
+      }
+
       const attackLabel = currentIntent.kind === "block"
         ? `敵はブロック +${currentIntent.value} を得た`
         : currentIntent.ignoresBlock
-          ? `⚔ 装甲貫通攻撃！ ブロックを無視してあなたに ${currentIntent.value} ダメージ`
+          ? `⚔ 装甲貫通攻撃！ ブロックを無視してあなたに ${actualDmg} ダメージ`
           : currentIntent.boosted
-            ? `⚠ 敵の意図が強化されている！ あなたに ${currentIntent.value} ダメージ`
-            : `敵の攻撃！ あなたに ${currentIntent.value} ダメージ`;
+            ? `⚠ 敵の意図が強化されている！ あなたに ${actualDmg} ダメージ${blockedAmount > 0 ? `（${blockedAmount}ダメージをブロック）` : ""}`
+            : `敵の攻撃！ あなたに ${actualDmg} ダメージ${blockedAmount > 0 ? `（${blockedAmount}ダメージをブロック）` : ""}`;
       actions.push({
         kind: "enemyTurn",
         intent: currentIntent,
@@ -616,13 +627,8 @@ function run(req: RunRequest): RunResult {
       if (currentIntent.kind === "block") {
         state.enemy.block += currentIntent.value;
       } else {
-        let dmg = currentIntent.value;
-        if (!currentIntent.ignoresBlock && state.player.block > 0) {
-          const absorbed = Math.min(state.player.block, dmg);
-          state.player.block -= absorbed;
-          dmg -= absorbed;
-        }
-        state.player.hp = Math.max(0, state.player.hp - dmg);
+        state.player.block -= blockedAmount;
+        state.player.hp = Math.max(0, state.player.hp - actualDmg);
       }
 
       // 次ターン準備（Main Clock・コンボ等）

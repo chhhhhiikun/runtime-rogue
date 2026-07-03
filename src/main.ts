@@ -393,12 +393,12 @@ function buildRewardModal(): void {
 }
 
 function showRewardScreen(char: CharacterDef, onPick: (id: CardId | null) => void): void {
-  // 重み付きランダム: Common 54% / Uncommon 30% / Rare 15% / Fatal 1%
+  // 重み付きランダム: Common 69% / Uncommon 20% / Rare 10% / Fatal 1%
   const pickWeighted = (): CardId | null => {
     const r = Math.random();
     let pool: CardId[];
-    if (r < 0.54)      pool = char.cardPool.common;
-    else if (r < 0.84) pool = char.cardPool.uncommon;
+    if (r < 0.69)      pool = char.cardPool.common;
+    else if (r < 0.89) pool = char.cardPool.uncommon;
     else if (r < 0.99) pool = char.cardPool.rare;
     else               pool = char.cardPool.fatal;
     if (pool.length === 0) pool = char.cardPool.common;
@@ -452,6 +452,47 @@ function showRewardScreen(char: CharacterDef, onPick: (id: CardId | null) => voi
 
 function closeRewardModal(): void {
   document.getElementById("reward-modal")?.classList.add("hidden");
+}
+
+// ── 勝利（次へ進む）モーダル ──────────────────────────────────────────
+
+function buildVictoryModal(): void {
+  const modal = document.createElement("div");
+  modal.id = "victory-modal";
+  modal.className = "pile-modal hidden";
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "pile-backdrop";
+
+  const popup = document.createElement("div");
+  popup.className = "pile-popup victory-popup";
+  popup.innerHTML = `
+    <div class="pile-popup-header">
+      <span class="pile-popup-title">✅ ステージクリア</span>
+    </div>
+    <div id="victory-body" class="victory-body"></div>
+    <div class="victory-footer">
+      <button id="victory-continue-btn" class="widget-btn primary">次へ進む →</button>
+    </div>
+  `;
+
+  modal.append(backdrop, popup);
+  document.body.appendChild(modal);
+}
+
+function showVictoryModal(lines: string[], onContinue: () => void): void {
+  const bodyEl = document.getElementById("victory-body")!;
+  bodyEl.innerHTML = lines.map(l => `<div>${l}</div>`).join("");
+  const btn = document.getElementById("victory-continue-btn") as HTMLButtonElement;
+  btn.onclick = () => {
+    closeVictoryModal();
+    onContinue();
+  };
+  document.getElementById("victory-modal")!.classList.remove("hidden");
+}
+
+function closeVictoryModal(): void {
+  document.getElementById("victory-modal")?.classList.add("hidden");
 }
 
 // ── チュートリアルモーダル ────────────────────────────────────────────
@@ -847,6 +888,15 @@ function restoreButtons(): void {
 
 // ── アンロック状態 ──────────────────────────────────────────────────
 
+// チュートリアルはレール式に段階的アンロックしていく設計のため、DEFAULT_UNLOCKS（通常プレイ用）
+// とは別に、常に全ロック状態から開始させる
+const TUTORIAL_INITIAL_UNLOCKS: UnlockFunctions = {
+  deckInfo:   false,
+  endTurn:    false,
+  functionKw: false,
+  arrowFn:    false,
+};
+
 let devUnlocks: UnlockFunctions = { ...DEFAULT_UNLOCKS };
 
 function getDeckSnapshot(): DeckSnapshot {
@@ -867,6 +917,11 @@ const totalStages = () => activeStages.length;
 
 let tutorialMode      = false;
 let tutorialStepIndex = 0;
+
+// チュートリアル中、Daemonをまだ教えていないステップではコード・実行の両方を無効化する
+function tutorialDaemonLocked(): boolean {
+  return tutorialMode && !TUTORIAL_STEPS[tutorialStepIndex]?.daemonEnabled;
+}
 
 let selectedCharacter: CharacterDef = CHARACTERS[0];
 let PLAYER_MAX_HP = selectedCharacter.hp;
@@ -998,8 +1053,12 @@ function setTutorialUIVisible(visible: boolean): void {
   if (refBtn) refBtn.style.display = visible ? "" : "none";
   const addMainBtn = document.getElementById("add-main-btn");
   if (addMainBtn) addMainBtn.style.display = visible ? "" : "none";
-  const endTurnBtn = document.getElementById("end-turn-btn");
-  if (endTurnBtn) endTurnBtn.style.display = visible ? "" : "none";
+  // 「ターン終了」ボタンはチュートリアル中も常に表示する（複数ターンかかるステージで
+  // 手詰まりにならないよう、endTurn()未アンロックでも手動で次ターンへ進められるようにする）
+
+  // Daemonはチュートリアルで教えるまでUI自体を隠す
+  const daemonWidget = document.getElementById("w-daemon");
+  if (daemonWidget) daemonWidget.style.display = visible ? "" : "none";
 }
 
 // ごく簡易なMarkdown→HTML変換。```lang フェンスはMonacoのcolorizeでシンタックスハイライトする。
@@ -1078,6 +1137,11 @@ async function showTutorialTipModal(): Promise<void> {
   startBtn.onclick = () => {
     document.getElementById("tutorial-modal")!.classList.add("hidden");
     if (step.unlockFunctionKw) devUnlocks = { ...devUnlocks, functionKw: true };
+    if (step.daemonEnabled) {
+      const daemonWidget = document.getElementById("w-daemon");
+      if (daemonWidget) daemonWidget.style.display = "";
+      setCode(daemonEditor, ""); // 過去のセッションの書きかけコードが残っていないよう空にする
+    }
     deckCards = [...step.deck];
     startBattle();
   };
@@ -1104,7 +1168,7 @@ function startTutorial(): void {
   tutorialMode      = true;
   tutorialStepIndex = 0;
   activeStages      = TUTORIAL_STEPS.map(s => s.stage);
-  devUnlocks        = { ...DEFAULT_UNLOCKS };
+  devUnlocks        = { ...TUTORIAL_INITIAL_UNLOCKS };
 
   const char = getCharacter("loopRunner");
   selectedCharacter = char;
@@ -1225,12 +1289,14 @@ async function startBattle(): Promise<void> {
     .filter(c => c.trim())
     .join("\n\n") || undefined;
   const snap = devUnlocks.deckInfo ? getDeckSnapshot() : undefined;
+  // チュートリアル中はDaemonをまだ教えていないステップでは、コードも実行も無効化する
+  const daemonCodeForRun = tutorialDaemonLocked() ? undefined : getCode(daemonEditor);
   const result = await runUserCode(
     "", state, deck.hand, devUnlocks, snap, 10000, libraryCode,
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
-    getCode(daemonEditor), [...deck.deployedCards],
-    undefined, true, stage.gimmick,
+    daemonCodeForRun, [...deck.deployedCards],
+    undefined, !tutorialDaemonLocked(), stage.gimmick,
   );
   await processRunResult(result);
 }
@@ -1400,12 +1466,14 @@ async function onRun(entry: EditorEntry): Promise<void> {
   const stage        = activeStages[currentStageIndex];
 
   const allowedFns = tutorialMode ? TUTORIAL_STEPS[tutorialStepIndex].allowedFns : undefined;
+  // チュートリアル中はDaemonをまだ教えていないステップでは、コードも実行も無効化する
+  const daemonCodeForRun = tutorialDaemonLocked() ? undefined : getCode(daemonEditor);
 
   const result = await runUserCode(
     getCode(entry.editor), state, deck.hand, devUnlocks, snap, 10000, libraryCode,
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
-    getCode(daemonEditor), [...deck.deployedCards],
+    daemonCodeForRun, [...deck.deployedCards],
     allowedFns, false, stage.gimmick,
   );
   await processRunResult(result, entry);
@@ -1426,12 +1494,14 @@ async function onEndTurn(): Promise<void> {
     .filter(c => c.trim())
     .join("\n\n") || undefined;
   const snap = devUnlocks.deckInfo ? getDeckSnapshot() : undefined;
+  // チュートリアル中はDaemonをまだ教えていないステップでは、コードも実行も無効化する
+  const daemonCodeForRun = tutorialDaemonLocked() ? undefined : getCode(daemonEditor);
 
   const result = await runUserCode(
     "endTurn();", state, deck.hand, devUnlocks, snap, 10000, libraryCode,
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
-    getCode(daemonEditor), [...deck.deployedCards],
+    daemonCodeForRun, [...deck.deployedCards],
     undefined, false, stage.gimmick,
   );
   await processRunResult(result);
@@ -1459,7 +1529,8 @@ async function finish(win: boolean): Promise<void> {
     return;
   }
 
-  appendLog(`✅ ${activeStages[currentStageIndex].name} を倒した！`, "sys");
+  const clearedStageName = activeStages[currentStageIndex].name;
+  appendLog(`✅ ${clearedStageName} を倒した！`, "sys");
 
   const healed = Math.floor(PLAYER_MAX_HP * HEAL_RATE);
   runPlayerHp  = Math.min(PLAYER_MAX_HP, state.player.hp + healed);
@@ -1483,24 +1554,28 @@ async function finish(win: boolean): Promise<void> {
   }
 
   currentStageIndex++;
-  await sleep(600);
 
-  if (tutorialMode) {
-    // チュートリアルはランダム報酬なし。各ステージで必要なカードだけを次のtipで指定する。
-    tutorialStepIndex++;
-    showTutorialTipModal();
-    return;
-  }
+  showVictoryModal(
+    [`✅ ${clearedStageName} を倒した！`, `💊 HP +${healed} 回復 → ${runPlayerHp}`],
+    () => {
+      if (tutorialMode) {
+        // チュートリアルはランダム報酬なし。各ステージで必要なカードだけを次のtipで指定する。
+        tutorialStepIndex++;
+        showTutorialTipModal();
+        return;
+      }
 
-  showRewardScreen(selectedCharacter, (picked) => {
-    if (picked) {
-      deckCards.push(picked);
-      appendLog(`✨ 「${CARDS[picked]?.signature ?? picked}」をデッキに追加`, "sys");
-    } else {
-      appendLog("スキップ", "sys");
-    }
-    startBattle();
-  });
+      showRewardScreen(selectedCharacter, (picked) => {
+        if (picked) {
+          deckCards.push(picked);
+          appendLog(`✨ 「${CARDS[picked]?.signature ?? picked}」をデッキに追加`, "sys");
+        } else {
+          appendLog("スキップ", "sys");
+        }
+        startBattle();
+      });
+    },
+  );
 }
 
 // ── 関数リファレンスモーダル ────────────────────────────────────────
@@ -1523,7 +1598,7 @@ function buildReferenceModal(): void {
       title: "🗡 スターターカード",
       color: "var(--enemy)",
       items: [
-        { sig: "attack()", cost: "1", desc: "敵に 3+⌊combo/3⌋ ダメージ", example: "attack();" },
+        { sig: "attack()", cost: "1", desc: "敵に 3+min(3,⌊combo/4⌋) ダメージ（最大6）", example: "attack();" },
         { sig: "block()",  cost: "1", desc: "ブロック +max(2, 5-⌊combo/2⌋)", example: "block();" },
         { sig: "noop()",   cost: "0", desc: "何もしない（コンボ +1 のみ）", example: "noop();" },
       ],
@@ -1665,6 +1740,7 @@ document.getElementById("restart-btn")!.addEventListener("click", () => {
 buildPileModal();
 buildCyclerModal();
 buildRewardModal();
+buildVictoryModal();
 buildTutorialModal();
 buildReferenceModal();
 buildEnemyWidget();

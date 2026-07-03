@@ -123,7 +123,7 @@ export const CARDS: Record<CardId, CardDef> = {
   lrAttack: {
     id: "lrAttack", fn: "attack",
     signature: "attack()",
-    description: "敵に 3+⌊combo/3⌋ ダメージ。コンボが増えるほど威力UP。コスト: 1",
+    description: "敵に 3+min(3,⌊combo/4⌋) ダメージ（最大6）。コスト: 1",
     rarity: "starter", attributes: [],
   },
   lrBlock: {

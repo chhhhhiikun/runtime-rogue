@@ -489,6 +489,23 @@ body {
   border-top: 1px solid var(--border);
 }
 
+/* ═══ 勝利（次へ進む）モーダル ══════════════════════════════════ */
+
+.victory-popup { width: min(380px, 92vw); }
+
+.victory-body {
+  padding: 24px 20px;
+  font-size: 0.92rem;
+  line-height: 2;
+  text-align: center;
+}
+
+.victory-footer {
+  padding: 10px 18px 18px;
+  text-align: center;
+}
+.victory-footer .widget-btn { padding: 8px 24px; font-size: 0.85rem; }
+
 /* ═══ ステージラベル ════════════════════════════════════════ */
 
 .stage-label {
@@ -1067,7 +1084,7 @@ body {
   font-size: 0.82rem;
   line-height: 1.6;
   overflow-y: auto;
-  max-height: 340px;
+  height: 340px; /* 初期高さ。リサイズハンドルで上書きされる（editor-wrapと同じ方式） */
 }
 .tutorial-widget-title {
   font-weight: 700;

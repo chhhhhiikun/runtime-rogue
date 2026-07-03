@@ -7,10 +7,10 @@ import type { StageGimmick } from "../game/stages";
 export type { UnlockFunctions, DeckSnapshot };
 
 export const DEFAULT_UNLOCKS: UnlockFunctions = {
-  deckInfo:   false,
-  endTurn:    false,
-  functionKw: false,
-  arrowFn:    false,
+  deckInfo:   true,
+  endTurn:    true,
+  functionKw: true,
+  arrowFn:    true,
 };
 
 export function runUserCode(
