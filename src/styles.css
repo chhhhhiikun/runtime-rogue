@@ -506,6 +506,89 @@ body {
 }
 .victory-footer .widget-btn { padding: 8px 24px; font-size: 0.85rem; }
 
+/* ═══ エディタプリセットモーダル ════════════════════════════════ */
+
+.preset-popup { width: min(480px, 92vw); }
+
+.preset-warning {
+  padding: 8px 18px;
+  font-size: 0.76rem;
+  color: var(--energy);
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.preset-row-builtin { border-style: dashed; }
+
+.preset-save-row {
+  display: flex;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.preset-name-input {
+  flex: 1;
+  background: #0a0c12;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.85rem;
+  padding: 6px 10px;
+  outline: none;
+}
+.preset-name-input:focus { border-color: var(--accent); }
+
+.preset-list {
+  overflow-y: auto;
+  max-height: 50vh;
+  padding: 8px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.preset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.preset-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.preset-row-name {
+  font-weight: 700;
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preset-row-date { font-size: 0.7rem; color: var(--muted); }
+
+.preset-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.preset-row-actions .widget-btn { padding: 5px 12px; font-size: 0.78rem; }
+
+.preset-footer {
+  padding: 10px 18px 14px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-align: center;
+  border-top: 1px solid var(--border);
+}
+
 /* ═══ ステージラベル ════════════════════════════════════════ */
 
 .stage-label {

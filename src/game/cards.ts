@@ -198,10 +198,10 @@ export const CARDS: Record<CardId, CardDef> = {
     description: "敵 HP が コンボ数 × 3 以下なら即死（ブロック無視）。コスト: 3",
     rarity: "rare", attributes: ["unique"],
   },
-  compilerOptimization: {
-    id: "compilerOptimization", fn: "compilerOptimization",
-    signature: "compilerOptimization()",
-    description: "カード 3 枚引く。このターン手札の通常カード（属性なし）のコストを 0 にする。コスト: 2",
+  stackOverflow: {
+    id: "stackOverflow", fn: "stackOverflow",
+    signature: "stackOverflow()",
+    description: "自分 HP -3。このターン中コンボ増加が +1 の代わりに +5 になる。コスト: 2",
     rarity: "rare", attributes: ["unique"],
   },
   overclockBurst: {
@@ -212,10 +212,10 @@ export const CARDS: Record<CardId, CardDef> = {
   },
 
   // ─── Loop Runner Fatal（最上位・排出率1%）───────────────────────
-  stackOverflow: {
-    id: "stackOverflow", fn: "stackOverflow",
-    signature: "stackOverflow()",
-    description: "自分 HP -3。このターン中コンボ増加が +1 の代わりに +5 になる。コスト: 2",
+  compilerOptimization: {
+    id: "compilerOptimization", fn: "compilerOptimization",
+    signature: "compilerOptimization()",
+    description: "カード 3 枚引く。このターン手札の通常カード（属性なし）のコストを 0 にする。コスト: 2",
     rarity: "fatal", attributes: ["unique"],
   },
 };

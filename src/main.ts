@@ -41,6 +41,13 @@ interface EditorSaveEntry {
   x: number; y: number; w: number; h: number;
 }
 
+interface EditorPreset {
+  name: string;
+  savedAt: number;
+  mainLibrary: EditorSaveEntry[];
+  daemonCode: string;
+}
+
 // ── キャンバス状態 ──────────────────────────────────────────────────
 
 const canvasRoot = document.getElementById("canvas-root")!;
@@ -145,19 +152,34 @@ window.addEventListener("mouseup", () => {
   canvasRoot.classList.remove("panning");
 });
 
-canvasRoot.addEventListener("wheel", (e) => {
-  if ((e.target as HTMLElement).closest(".widget")) return;
-  e.preventDefault();
-  const factor   = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+function zoomCanvasAt(clientX: number, clientY: number, deltaY: number): void {
+  const factor   = deltaY < 0 ? 1.1 : 1 / 1.1;
   const newScale = Math.min(3, Math.max(0.15, cvScale * factor));
   const rect     = canvasRoot.getBoundingClientRect();
-  const mx = e.clientX - rect.left;
-  const my = e.clientY - rect.top;
+  const mx = clientX - rect.left;
+  const my = clientY - rect.top;
   cvX = mx - (mx - cvX) * (newScale / cvScale);
   cvY = my - (my - cvY) * (newScale / cvScale);
   cvScale = newScale;
   updateCanvas();
+}
+
+canvasRoot.addEventListener("wheel", (e) => {
+  // ウィジェット（エディタ等）上では、その場でのスクロールを優先する
+  // （Ctrl/Cmd+ホイールは下記のwindowのキャプチャ段リスナーが優先的に処理する）
+  if ((e.target as HTMLElement).closest(".widget")) return;
+  e.preventDefault();
+  zoomCanvasAt(e.clientX, e.clientY, e.deltaY);
 }, { passive: false });
+
+// Ctrl/Cmd+ホイールは、Monaco等ウィジェット側の処理より先に（キャプチャ段で）
+// 割り込んでキャンバスのズームとして扱う。カーソルがエディタ上にあっても効くようにするため。
+window.addEventListener("wheel", (e) => {
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  e.stopPropagation();
+  zoomCanvasAt(e.clientX, e.clientY, e.deltaY);
+}, { passive: false, capture: true });
 
 document.getElementById("reset-view-btn")!.addEventListener("click", () => {
   cvX = 0; cvY = 0; cvScale = 1;
@@ -495,6 +517,118 @@ function closeVictoryModal(): void {
   document.getElementById("victory-modal")?.classList.add("hidden");
 }
 
+// ── エディタプリセットモーダル ────────────────────────────────────────
+
+function buildPresetModal(): void {
+  const modal = document.createElement("div");
+  modal.id = "preset-modal";
+  modal.className = "pile-modal hidden";
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "pile-backdrop";
+  backdrop.addEventListener("click", closePresetModal);
+
+  const popup = document.createElement("div");
+  popup.className = "pile-popup preset-popup";
+  popup.innerHTML = `
+    <div class="pile-popup-header">
+      <span class="pile-popup-title">🧩 エディタプリセット</span>
+      <button class="pile-popup-close" id="preset-modal-close">✕</button>
+    </div>
+    <div class="preset-warning">⚠ 保存していないエディタ情報は破棄されます</div>
+    <div class="preset-save-row">
+      <input type="text" id="preset-name-input" class="preset-name-input" placeholder="プリセット名" maxlength="40" />
+      <button id="preset-save-btn" class="widget-btn primary">現在の内容を保存</button>
+    </div>
+    <div id="preset-list" class="preset-list"></div>
+    <div class="preset-footer">Main/Library/Daemonエディタの内容とレイアウトをまとめて保存・復元します</div>
+  `;
+
+  modal.append(backdrop, popup);
+  document.body.appendChild(modal);
+
+  document.getElementById("preset-modal-close")!.addEventListener("click", closePresetModal);
+
+  const nameInput = document.getElementById("preset-name-input") as HTMLInputElement;
+  const saveBtn   = document.getElementById("preset-save-btn") as HTMLButtonElement;
+  saveBtn.addEventListener("click", () => {
+    const name = nameInput.value.trim();
+    if (!name) return;
+    saveCurrentAsPreset(name);
+    nameInput.value = "";
+    renderPresetList();
+  });
+}
+
+function renderPresetList(): void {
+  const listEl = document.getElementById("preset-list")!;
+  const presets = loadPresets().sort((a, b) => b.savedAt - a.savedAt);
+
+  listEl.innerHTML = "";
+
+  // 適用専用の組み込みプリセット（削除・上書き不可、常に先頭に表示）
+  const blankRow = document.createElement("div");
+  blankRow.className = "preset-row preset-row-builtin";
+  blankRow.innerHTML = `
+    <div class="preset-row-info">
+      <span class="preset-row-name">デフォルト（空の状態）</span>
+      <span class="preset-row-date">組み込み・適用専用</span>
+    </div>
+    <div class="preset-row-actions">
+      <button class="widget-btn primary preset-apply-btn">適用</button>
+    </div>
+  `;
+  blankRow.querySelector(".preset-apply-btn")!.addEventListener("click", () => {
+    applyBlankPreset();
+    closePresetModal();
+  });
+  listEl.appendChild(blankRow);
+
+  if (presets.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "pile-popup-empty";
+    empty.textContent = "保存されたプリセットはありません";
+    listEl.appendChild(empty);
+    return;
+  }
+
+  for (const preset of presets) {
+    const row = document.createElement("div");
+    row.className = "preset-row";
+    const savedDate = new Date(preset.savedAt).toLocaleString();
+    row.innerHTML = `
+      <div class="preset-row-info">
+        <span class="preset-row-name">${preset.name}</span>
+        <span class="preset-row-date">${savedDate}</span>
+      </div>
+      <div class="preset-row-actions">
+        <button class="widget-btn primary preset-apply-btn">適用</button>
+        <button class="widget-btn danger preset-delete-btn">削除</button>
+      </div>
+    `;
+    row.querySelector(".preset-apply-btn")!.addEventListener("click", () => {
+      applyPreset(preset);
+      closePresetModal();
+    });
+    row.querySelector(".preset-delete-btn")!.addEventListener("click", () => {
+      if (confirm(`「${preset.name}」を削除しますか？`)) {
+        deletePreset(preset.name);
+        renderPresetList();
+      }
+    });
+    listEl.appendChild(row);
+  }
+}
+
+function showPresetModal(): void {
+  renderPresetList();
+  document.getElementById("preset-modal")!.classList.remove("hidden");
+}
+
+function closePresetModal(): void {
+  document.getElementById("preset-modal")?.classList.add("hidden");
+}
+
 // ── チュートリアルモーダル ────────────────────────────────────────────
 
 function buildTutorialModal(): void {
@@ -728,9 +862,8 @@ function debouncedSave(): void {
   saveTimer = setTimeout(saveEditorState, 100);
 }
 
-function saveEditorState(): void {
-  if (tutorialMode) return; // チュートリアル中のエディタは通常保存を上書きしない
-  const data: EditorSaveEntry[] = entries.map(e => ({
+function snapshotEditors(): EditorSaveEntry[] {
+  return entries.map(e => ({
     title: e.titleEl.textContent ?? "",
     kind: e.kind,
     code: getCode(e.editor),
@@ -739,8 +872,12 @@ function saveEditorState(): void {
     w: e.widget.offsetWidth || 460,
     h: e.widget.offsetHeight || 300,
   }));
+}
+
+function saveEditorState(): void {
+  if (tutorialMode) return; // チュートリアル中のエディタは通常保存を上書きしない
   try {
-    localStorage.setItem("runtime_rogue_editors", JSON.stringify(data));
+    localStorage.setItem("runtime_rogue_editors", JSON.stringify(snapshotEditors()));
   } catch {
     // ignore storage errors
   }
@@ -756,10 +893,64 @@ function loadEditorState(): EditorSaveEntry[] | null {
   }
 }
 
+// ── エディタプリセット ──────────────────────────────────────────────
+
+function loadPresets(): EditorPreset[] {
+  try {
+    const raw = localStorage.getItem("runtime_rogue_presets");
+    if (!raw) return [];
+    return JSON.parse(raw) as EditorPreset[];
+  } catch {
+    return [];
+  }
+}
+
+function savePresets(presets: EditorPreset[]): void {
+  try {
+    localStorage.setItem("runtime_rogue_presets", JSON.stringify(presets));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function saveCurrentAsPreset(name: string): void {
+  const preset: EditorPreset = {
+    name,
+    savedAt: Date.now(),
+    mainLibrary: snapshotEditors(),
+    daemonCode: getCode(daemonEditor),
+  };
+  const presets = loadPresets();
+  const idx = presets.findIndex(p => p.name === name);
+  if (idx !== -1) presets[idx] = preset;
+  else presets.push(preset);
+  savePresets(presets);
+}
+
+function applyPreset(preset: EditorPreset): void {
+  clearAllEditors();
+  for (const s of preset.mainLibrary) {
+    addEditor(s.title, s.code, s.x, s.y, s.kind, s.h, s.w);
+  }
+  setCode(daemonEditor, preset.daemonCode);
+}
+
+// 適用専用の組み込みプリセット：何も書かれていないまっさらな状態を呼び出す
+function applyBlankPreset(): void {
+  clearAllEditors();
+  addEditor("editor #1", "", 690, 20, "main");
+  setCode(daemonEditor, "");
+}
+
+function deletePreset(name: string): void {
+  savePresets(loadPresets().filter(p => p.name !== name));
+}
+
 function addEditor(
   name: string, initial: string, x: number, y: number,
   kind: "main" | "library" = "main",
   savedH?: number,
+  savedW?: number,
 ): EditorEntry {
   const idx = entries.length + 1;
   const displayName = name || (kind === "library" ? `library #${idx}` : `editor #${idx}`);
@@ -767,7 +958,7 @@ function addEditor(
   const { widget, titleEl } = createWidget(
     `editor-${Date.now()}`,
     displayName,
-    x, y, 460,
+    x, y, savedW || 460,
     `<div class="editor-wrap"></div><div class="editor-error"></div>`,
     { editableTitle: true },
   );
@@ -933,6 +1124,7 @@ let state: CombatState;
 let deck: Deck;
 let busy            = false;
 let over            = false;
+let startingBattle  = false; // startBattle()の多重起動防止（ボタン連打・二重クリック対策）
 let currentIntentIndex = 0; // intentPattern 内の現在位置
 
 const INITIAL_CODE = `// 手札の関数を使って敵を倒そう！
@@ -988,6 +1180,7 @@ function buildCharSelectScreen(): void {
   el.innerHTML = `
     <div class="char-select-title">キャラクターを選択</div>
     <button class="char-tutorial-btn" id="char-tutorial-btn">📘 チュートリアル</button>
+    <button class="char-tutorial-btn" id="char-preset-btn">🧩 エディタプリセット</button>
     <div class="char-grid" id="char-grid"></div>
     <button class="char-back-btn" id="char-back-btn">← 戻る</button>
   `;
@@ -996,6 +1189,8 @@ function buildCharSelectScreen(): void {
     showGameScreen();
     startTutorial();
   });
+
+  document.getElementById("char-preset-btn")!.addEventListener("click", showPresetModal);
 
   const grid = document.getElementById("char-grid")!;
   for (const char of CHARACTERS) {
@@ -1053,6 +1248,8 @@ function setTutorialUIVisible(visible: boolean): void {
   if (refBtn) refBtn.style.display = visible ? "" : "none";
   const addMainBtn = document.getElementById("add-main-btn");
   if (addMainBtn) addMainBtn.style.display = visible ? "" : "none";
+  const presetBtn = document.getElementById("editor-preset-btn");
+  if (presetBtn) presetBtn.style.display = visible ? "" : "none";
   // 「ターン終了」ボタンはチュートリアル中も常に表示する（複数ターンかかるステージで
   // 手詰まりにならないよう、endTurn()未アンロックでも手動で次ターンへ進められるようにする）
 
@@ -1221,6 +1418,17 @@ function describeGimmick(g: StageGimmick): string {
 }
 
 async function startBattle(): Promise<void> {
+  // 二重クリック等で短時間に複数回呼ばれても、実際の戦闘開始処理は1回しか走らせない
+  if (startingBattle) return;
+  startingBattle = true;
+  try {
+    await startBattleInner();
+  } finally {
+    startingBattle = false;
+  }
+}
+
+async function startBattleInner(): Promise<void> {
   const stage = activeStages[currentStageIndex];
   currentIntentIndex = 0;
   const firstIntent = stage.intentPattern[0] ?? { kind: "attack", value: 6 };
@@ -1633,9 +1841,9 @@ function buildReferenceModal(): void {
         { sig: "asyncDraw()",   cost: "1", desc: "2枚ドロー" },
         { sig: "incrementalBlock()", cost: "2", desc: "ブロック+コンボ数" },
         { sig: "execute()",     cost: "3", desc: "敵HP ≤ コンボ×3 なら即死" },
-        { sig: "compilerOptimization()", cost: "2", desc: "3枚ドロー、通常カードのコスト0" },
+        { sig: "compilerOptimization()", cost: "2", desc: "【Fatal】3枚ドロー、通常カードのコスト0" },
         { sig: "overclockBurst()", cost: "0", desc: "エネルギー全回復、コンボ+3" },
-        { sig: "stackOverflow()", cost: "2", desc: "【Fatal】HP -3、コンボ増加が+5に" },
+        { sig: "stackOverflow()", cost: "2", desc: "HP -3、コンボ増加が+5に" },
       ],
     },
   ];
@@ -1729,6 +1937,8 @@ document.getElementById("add-lib-btn")!.addEventListener("click", () => {
   addEditor("", LIBRARY_INITIAL_CODE, x, y, "library").editor.focus();
 });
 
+document.getElementById("editor-preset-btn")!.addEventListener("click", showPresetModal);
+
 document.getElementById("end-turn-btn")!.addEventListener("click", onEndTurn);
 document.getElementById("restart-btn")!.addEventListener("click", () => {
   if (tutorialMode) endTutorialAndReturn();
@@ -1741,6 +1951,7 @@ buildPileModal();
 buildCyclerModal();
 buildRewardModal();
 buildVictoryModal();
+buildPresetModal();
 buildTutorialModal();
 buildReferenceModal();
 buildEnemyWidget();
@@ -1764,7 +1975,7 @@ function restoreEditorsFromStorage(): void {
   const savedEditors = loadEditorState();
   if (savedEditors && savedEditors.length > 0) {
     for (const s of savedEditors) {
-      addEditor(s.title, s.code, s.x, s.y, s.kind, s.h);
+      addEditor(s.title, s.code, s.x, s.y, s.kind, s.h, s.w);
     }
   } else {
     addEditor("editor #1", INITIAL_CODE, 690, 20, "main");

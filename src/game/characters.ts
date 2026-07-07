@@ -21,8 +21,8 @@ export const CHARACTERS: CharacterDef[] = [
     cardPool: {
       common: ["initialize", "forceQuit", "overClock", "incrementalAttack", "patch"],
       uncommon: ["incrementalBlock", "bufferOverflowProtection", "asyncDraw"],
-      rare: ["lrExecute", "compilerOptimization", "overclockBurst"],
-      fatal: ["stackOverflow"],
+      rare: ["lrExecute", "stackOverflow", "overclockBurst"],
+      fatal: ["compilerOptimization"],
     },
     concept: "低コストカードをループで連打し、コンボ数を稼いで爆発力を出す。",
     available: true,
