@@ -2,7 +2,7 @@ import CodeWorker from "./worker.ts?worker";
 import type { RunRequest, RunResult, UnlockFunctions, DeckSnapshot } from "./worker";
 import type { CombatState, EnemyIntent } from "../game/state";
 import type { CardId } from "../game/cards";
-import type { StageGimmick } from "../game/stages";
+import type { StageGimmick, StoredValueGimmick } from "../game/stages";
 
 export type { UnlockFunctions, DeckSnapshot };
 
@@ -31,6 +31,7 @@ export function runUserCode(
   allowedFns?: string[],
   runDaemonAtStart?: boolean,
   gimmick?: StageGimmick,
+  storedValueGimmick?: StoredValueGimmick,
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     const worker = new CodeWorker();
@@ -68,7 +69,7 @@ export function runUserCode(
       intentPattern, intentIndex,
       daemonCode, deployedCardIds,
       allowedFns, runDaemonAtStart,
-      gimmick,
+      gimmick, storedValueGimmick,
     };
     worker.postMessage(req);
   });

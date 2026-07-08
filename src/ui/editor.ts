@@ -63,6 +63,8 @@ declare function damageDealtThisTurn(): number;
 declare function sameActionStreak(): number;
 declare function comboIncrement(): number;
 declare function turn(): number;
+declare function storedValue(): number;
+declare function turnsSinceRelease(): number;
 declare function isUsable(fn: string): boolean;
 declare function deploy(fn: string): void;
 declare function myHand(): string[];
@@ -96,6 +98,8 @@ const READ_ITEMS: Array<{ label: string; insert: string; detail: string; doc: st
   { label: "sameActionStreak",    insert: "sameActionStreak()",    detail: "() → number", doc: "同じ関数を連続で呼んだ回数" },
   { label: "comboIncrement",      insert: "comboIncrement()",      detail: "() → number", doc: "コンボが1回の使用で増加する量（0なら増加停止中）" },
   { label: "turn",                insert: "turn()",                detail: "() → number", doc: "現在のターン数" },
+  { label: "storedValue",         insert: "storedValue()",         detail: "() → number", doc: "Object Breakerの変数に蓄積されている値" },
+  { label: "turnsSinceRelease",   insert: "turnsSinceRelease()",   detail: "() → number", doc: "release系(release/compact/bigRelease)を最後に使ってから経過したターン数" },
   { label: "isUsable",    insert: "isUsable(\"${1:attack}\")", detail: "(fn: string) → boolean", doc: "そのカードが今のターン使用可能かどうか（Unique使用済み等はfalse）" },
   { label: "deploy",      insert: "deploy(\"${1:attack}\")",   detail: "(fn: string) → void",    doc: "手札のカードをDaemonへ常駐化する（コスト: 基礎コスト×2をMain Clockから消費）" },
 ];

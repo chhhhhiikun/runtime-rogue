@@ -4,7 +4,7 @@ import { type MonacoEditor, createEditor, getCode, setCode, insertText, colorize
 import { MAX_ENERGY, MAX_DAEMON_COST, type CombatState } from "./game/state";
 import { HAND_SIZE, CARDS, getCardBaseCost, type CardId } from "./game/cards";
 import { CHARACTERS, getCharacter, getAllCharacterCards, type CharacterDef } from "./game/characters";
-import { STAGES, type StageDef, type StageGimmick } from "./game/stages";
+import { STAGES, type StageDef, type StageGimmick, type StoredValueGimmick } from "./game/stages";
 import { TUTORIAL_STEPS } from "./game/tutorial";
 import { Deck } from "./game/deck";
 import { applyAction } from "./game/actions";
@@ -1417,6 +1417,17 @@ function describeGimmick(g: StageGimmick): string {
   }
 }
 
+function describeStoredValueGimmick(g: StoredValueGimmick): string {
+  switch (g.kind) {
+    case "cap":
+      return `上限キャップ: 変数が${g.threshold}を超えると、超過分は即座に切り捨てられる`;
+    case "absorb":
+      return `被弾時吸収: 敵の攻撃行動のたび、変数の${Math.round(g.percent * 100)}%を奪われる`;
+    case "decay":
+      return `ガベージコレクション: release系(release/compact/bigRelease)を${g.staleThreshold}ターン使わないと、以降毎ターン変数が${Math.round(g.decayRate * 100)}%ずつ減衰し続ける`;
+  }
+}
+
 async function startBattle(): Promise<void> {
   // 二重クリック等で短時間に複数回呼ばれても、実際の戦闘開始処理は1回しか走らせない
   if (startingBattle) return;
@@ -1463,6 +1474,9 @@ async function startBattleInner(): Promise<void> {
     sameActionKind: null,
     sameActionStreak: 0,
     maxSingleHitThisTurn: 0,
+    storedValue: 0,
+    turnsSinceRelease: 0,
+    releasedThisTurn: false,
   };
   deck = new Deck([...deckCards]);
   over = false;
@@ -1481,6 +1495,9 @@ async function startBattleInner(): Promise<void> {
   appendLog(`デッキ: ${deckCards.length} 枚`, "sys");
   if (stage.gimmick) {
     appendLog(`⚙ ギミック: ${describeGimmick(stage.gimmick)}`, "sys");
+  }
+  if (stage.storedValueGimmick) {
+    appendLog(`⚙ ギミック: ${describeStoredValueGimmick(stage.storedValueGimmick)}`, "sys");
   }
   entries.forEach(e => { e.errorEl.textContent = ""; });
 
@@ -1504,7 +1521,7 @@ async function startBattleInner(): Promise<void> {
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
-    undefined, !tutorialDaemonLocked(), stage.gimmick,
+    undefined, !tutorialDaemonLocked(), stage.gimmick, stage.storedValueGimmick,
   );
   await processRunResult(result);
 }
@@ -1604,6 +1621,9 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
     state.sameActionKind       = result.finalState.sameActionKind;
     state.sameActionStreak     = result.finalState.sameActionStreak;
     state.maxSingleHitThisTurn = result.finalState.maxSingleHitThisTurn;
+    state.storedValue          = result.finalState.storedValue;
+    state.turnsSinceRelease    = result.finalState.turnsSinceRelease;
+    state.releasedThisTurn     = result.finalState.releasedThisTurn;
   }
 
   updateDaemonDisplay();
@@ -1682,7 +1702,7 @@ async function onRun(entry: EditorEntry): Promise<void> {
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
-    allowedFns, false, stage.gimmick,
+    allowedFns, false, stage.gimmick, stage.storedValueGimmick,
   );
   await processRunResult(result, entry);
 }
@@ -1710,7 +1730,7 @@ async function onEndTurn(): Promise<void> {
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
-    undefined, false, stage.gimmick,
+    undefined, false, stage.gimmick, stage.storedValueGimmick,
   );
   await processRunResult(result);
 }
@@ -1826,10 +1846,12 @@ function buildReferenceModal(): void {
         { sig: "sameActionStreak()", cost: "0", desc: "同じ関数を連続で呼んだ回数を返す", example: "if (sameActionStreak() >= 3) block();" },
         { sig: "comboIncrement()", cost: "0", desc: "コンボが1回の使用で増加する量を返す（0なら増加停止中）", example: "if (comboIncrement() > 0) noop();" },
         { sig: "turn()", cost: "0", desc: "現在のターン数を返す", example: "if (turn() > 10) attack();" },
+        { sig: "storedValue()", cost: "0", desc: "Object Breakerの変数に蓄積されている値を返す", example: "if (storedValue() >= 10) release();" },
+        { sig: "turnsSinceRelease()", cost: "0", desc: "release系(release/compact/bigRelease)を最後に使ってから経過したターン数を返す", example: "if (turnsSinceRelease() >= 1) release();" },
       ],
     },
     {
-      title: "✨ カード一覧",
+      title: "✨ Loop Runner カード一覧",
       color: "var(--energy)",
       items: [
         { sig: "overClock()",   cost: "0", desc: "HP -2、エネルギー+1" },
@@ -1844,6 +1866,27 @@ function buildReferenceModal(): void {
         { sig: "compilerOptimization()", cost: "2", desc: "【Fatal】3枚ドロー、通常カードのコスト0" },
         { sig: "overclockBurst()", cost: "0", desc: "エネルギー全回復、コンボ+3" },
         { sig: "stackOverflow()", cost: "2", desc: "HP -3、コンボ増加が+5に" },
+      ],
+    },
+    {
+      title: "💾 Object Breaker カード一覧",
+      color: "var(--player)",
+      items: [
+        { sig: "attack()",  cost: "2", desc: "敵に 5 ダメージ" },
+        { sig: "block()",   cost: "2", desc: "ブロック +6" },
+        { sig: "charge()",  cost: "0", desc: "変数に +2 を格納" },
+        { sig: "store()",   cost: "2", desc: "変数に +4 を格納" },
+        { sig: "release()", cost: "1", desc: "変数の値だけ敵にダメージ、変数を0に" },
+        { sig: "compact()", cost: "1", desc: "変数を半分にし、減った分だけ即座に敵にダメージ" },
+        { sig: "defrag()",  cost: "0", desc: "HP +3 回復（使い捨て）" },
+        { sig: "fortify()", cost: "1", desc: "ブロック += max(2, ⌊変数/5⌋)" },
+        { sig: "double()",  cost: "3", desc: "変数を2倍にする" },
+        { sig: "overcharge()", cost: "2", desc: "変数に+8を格納。自分に2ダメージ" },
+        { sig: "siphon()",  cost: "0", desc: "変数から5を消費し、自分HPをその分回復" },
+        { sig: "surge()",   cost: "2", desc: "変数を1.5倍にする（切り捨て）" },
+        { sig: "bigRelease()", cost: "4", desc: "変数の1.5倍だけ敵にダメージ、変数を0に" },
+        { sig: "ironWall()", cost: "3", desc: "ブロック+14" },
+        { sig: "singularity()", cost: "3", desc: "【Fatal】変数を3倍にし、さらに+10する" },
       ],
     },
   ];

@@ -31,12 +31,27 @@ export type ActionCore =
   | { kind: "lrExecute"; cost: number; comboCount: number }
   | { kind: "compilerOptimization"; cost: number }
   | { kind: "overclockBurst"; cost: number }
+  // Object Breaker actions
+  | { kind: "charge"; cost: number }
+  | { kind: "store"; cost: number }
+  | { kind: "release"; cost: number }
+  | { kind: "compact"; cost: number }
+  | { kind: "defrag"; cost: number }
+  | { kind: "fortify"; cost: number }
+  | { kind: "double"; cost: number }
+  | { kind: "overcharge"; cost: number }
+  | { kind: "siphon"; cost: number }
+  | { kind: "surge"; cost: number }
+  | { kind: "bigRelease"; cost: number }
+  | { kind: "singularity"; cost: number }
   // 敵ギミックによるプレイヤーへの即時ダメージ（竜騎士「見切りの一撃」等。コストは発生しない）
   | { kind: "gimmickDamage"; amount: number; label: string }
   // 敵ギミックによる敵への即時ブロック付与（サイクロプス「単眼看破」等。コストは発生しない）
   | { kind: "gimmickBlock"; amount: number; label: string }
-  // ターン境界（敵ターン処理）
-  | { kind: "enemyTurn"; intent: EnemyIntent; nextIntent: EnemyIntent; label: string; poisonDmg: number };
+  // 敵ギミックによるstoredValueの直接上書き（Object Breaker「上限キャップ」等。コストは発生しない）
+  | { kind: "gimmickStoredValueSet"; value: number; label: string }
+  // ターン境界（敵ターン処理）。storedValueDeltaはstoredValueGimmick（被弾時吸収/GC）による増減分
+  | { kind: "enemyTurn"; intent: EnemyIntent; nextIntent: EnemyIntent; label: string; poisonDmg: number; storedValueDelta?: number };
 
 // viaDaemon: Daemon による自動実行由来のアクションかどうか（ログ表示・アニメーション分岐用）
 export type Action = ActionCore & { viaDaemon?: boolean };
@@ -94,6 +109,15 @@ export function applyAction(
     s.sameActionKind      = null;
     s.sameActionStreak    = 0;
     s.maxSingleHitThisTurn = 0;
+    if (a.storedValueDelta) {
+      s.storedValue = Math.max(0, s.storedValue + a.storedValueDelta);
+    }
+    if (s.releasedThisTurn) {
+      s.turnsSinceRelease = 0;
+    } else {
+      s.turnsSinceRelease++;
+    }
+    s.releasedThisTurn = false;
     s.turn++;
     s.enemy.intent = { ...a.nextIntent };
     return a.label;
@@ -114,6 +138,12 @@ export function applyAction(
   // gimmickBlock はコストを消費しない、敵ギミックによる敵への直接ブロック付与
   if (a.kind === "gimmickBlock") {
     s.enemy.block += a.amount;
+    return a.label;
+  }
+
+  // gimmickStoredValueSet はコストを消費しない、敵ギミックによるstoredValueの直接上書き
+  if (a.kind === "gimmickStoredValueSet") {
+    s.storedValue = a.value;
     return a.label;
   }
 
@@ -266,5 +296,67 @@ export function applyAction(
       return `overclockBurst: エネルギー +${gained}（全回復）、コンボ+3`;
     }
 
+    // ── Object Breaker ───────────────────────────────────────────
+    case "charge": {
+      s.storedValue += 2;
+      return `charge: 変数 +2（${s.storedValue}）`;
+    }
+    case "store": {
+      s.storedValue += 4;
+      return `store: 変数 +4（${s.storedValue}）`;
+    }
+    case "release": {
+      const raw   = vulnDmg(s, s.storedValue);
+      const dealt = damageEnemy(s, raw);
+      s.storedValue = 0;
+      return `release: 変数を解放して敵に ${dealt} ダメージ`;
+    }
+    case "compact": {
+      const before  = s.storedValue;
+      const after   = Math.floor(before / 2);
+      const removed = before - after;
+      s.storedValue = after;
+      const raw   = vulnDmg(s, removed);
+      const dealt = damageEnemy(s, raw);
+      return `compact: 変数 ${before} → ${after}、敵に ${dealt} ダメージ`;
+    }
+    case "defrag": {
+      s.player.hp = Math.min(s.player.maxHp, s.player.hp + 3);
+      return `defrag: HP +3 回復`;
+    }
+    case "fortify": {
+      const amount = Math.max(2, Math.floor(s.storedValue / 5));
+      s.player.block += amount;
+      return `fortify: ブロック +${amount}（変数${s.storedValue}）`;
+    }
+    case "double": {
+      s.storedValue *= 2;
+      return `double: 変数を2倍に（${s.storedValue}）`;
+    }
+    case "overcharge": {
+      s.storedValue += 8;
+      s.player.hp = Math.max(0, s.player.hp - 2);
+      return `overcharge: 変数 +8（${s.storedValue}）、自分に2ダメージ`;
+    }
+    case "siphon": {
+      const consumed = Math.min(5, s.storedValue);
+      s.storedValue -= consumed;
+      s.player.hp = Math.min(s.player.maxHp, s.player.hp + consumed);
+      return `siphon: 変数から${consumed}を消費してHP +${consumed}`;
+    }
+    case "surge": {
+      s.storedValue = Math.floor(s.storedValue * 1.5);
+      return `surge: 変数を1.5倍に（${s.storedValue}）`;
+    }
+    case "bigRelease": {
+      const raw   = vulnDmg(s, Math.floor(s.storedValue * 1.5));
+      const dealt = damageEnemy(s, raw);
+      s.storedValue = 0;
+      return `bigRelease: 変数を解放して敵に ${dealt} ダメージ`;
+    }
+    case "singularity": {
+      s.storedValue = s.storedValue * 3 + 10;
+      return `singularity: 変数を3倍+10に（${s.storedValue}）`;
+    }
   }
 }

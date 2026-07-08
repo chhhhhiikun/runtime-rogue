@@ -1,7 +1,7 @@
 import type { CombatState, EnemyIntent } from "../game/state";
 import { applyAction, type Action } from "../game/actions";
 import { CARDS, HAND_SIZE, getCardBaseCost, type CardId } from "../game/cards";
-import type { StageGimmick } from "../game/stages";
+import type { StageGimmick, StoredValueGimmick } from "../game/stages";
 
 export interface UnlockFunctions {
   deckInfo: boolean;   // myDeck() myHand() myDrawPile() myDiscard()
@@ -34,6 +34,7 @@ export interface RunRequest {
   allowedFns?: string[]; // 指定時、この名前の関数のみサンドボックスに公開する（チュートリアル用）
   runDaemonAtStart?: boolean; // trueの場合、メインスクリプト実行前に一度だけDaemonを走らせる（戦闘開始時用）
   gimmick?: StageGimmick; // ステージごとの対抗ギミック設定
+  storedValueGimmick?: StoredValueGimmick; // Object Breakerのstoredvalueを狙った対抗ギミック（gimmickと並行して有効）
 }
 
 export interface RunResult {
@@ -210,6 +211,22 @@ function run(req: RunRequest): RunResult {
     const dealtThisCall = state.damageDealtThisTurn - dmgBefore;
     if (dealtThisCall > state.maxSingleHitThisTurn) {
       state.maxSingleHitThisTurn = dealtThisCall;
+    }
+
+    // 上限キャップ（storedValueGimmick）: storedValueが閾値を超えたら即座に切り捨てる
+    // gimmickBlock等と同じく、専用アクションをpushしてメインスレッド側の再生にも反映する
+    // （直接state.storedValueを書き換えるだけだと、actions.ts側のリプレイがそれを知らないまま
+    // 後続のcompact()等が超過した値のまま計算してしまう不具合があったため）
+    const svg = req.storedValueGimmick;
+    if (svg?.kind === "cap" && state.storedValue > svg.threshold) {
+      const clampAction: Action = {
+        kind: "gimmickStoredValueSet",
+        value: svg.threshold,
+        label: `上限キャップ発動！ 変数が${svg.threshold}に切り捨てられた`,
+      };
+      applyAction(state, clampAction);
+      actions.push(clampAction);
+      consoleLogs.push(`[GIMMICK] ⚠ 上限キャップ！ 変数が${svg.threshold}に切り捨てられた`);
     }
   };
 
@@ -505,6 +522,120 @@ function run(req: RunRequest): RunResult {
     }
   };
 
+  // Object Breaker attack/block overrides（コンボ非依存の固定値）
+  const obAttackFn = (): void => {
+    if (availableSource().includes("obAttack")) {
+      checkInHand("obAttack");
+      const cost = effectiveCost("obAttack", 2);
+      record({ kind: "attack", amount: 5, cost }, "attack()");
+      addCombo();
+    } else {
+      legacyLib.attack!(0);
+    }
+  };
+
+  const obBlockFn = (): void => {
+    if (availableSource().includes("obBlock")) {
+      checkInHand("obBlock");
+      const cost = effectiveCost("obBlock", 2);
+      record({ kind: "block", amount: 6, cost }, "block()");
+      addCombo();
+    } else {
+      legacyLib.block!(0);
+    }
+  };
+
+  const obLib: Record<string, (...args: unknown[]) => void> = {
+    charge: () => {
+      checkInHand("charge");
+      checkUnique("charge");
+      const cost = effectiveCost("charge", 0);
+      record({ kind: "charge", cost }, "charge()");
+      addCombo();
+    },
+    store: () => {
+      checkInHand("store");
+      const cost = effectiveCost("store", 2);
+      record({ kind: "store", cost }, "store()");
+      addCombo();
+    },
+    release: () => {
+      checkInHand("release");
+      const cost = effectiveCost("release", 1);
+      record({ kind: "release", cost }, "release()");
+      addCombo();
+      state.releasedThisTurn = true;
+    },
+    compact: () => {
+      checkInHand("compact");
+      const cost = effectiveCost("compact", 1);
+      record({ kind: "compact", cost }, "compact()");
+      addCombo();
+      state.releasedThisTurn = true;
+    },
+    defrag: () => {
+      checkInHand("defrag");
+      const cost = effectiveCost("defrag", 0);
+      record({ kind: "defrag", cost }, "defrag()");
+      addCombo();
+      disposeCard("defrag");
+    },
+    fortify: () => {
+      checkInHand("fortify");
+      const cost = effectiveCost("fortify", 1);
+      record({ kind: "fortify", cost }, "fortify()");
+      addCombo();
+    },
+    double: () => {
+      checkInHand("double");
+      checkUnique("double");
+      const cost = effectiveCost("double", 3);
+      record({ kind: "double", cost }, "double()");
+      addCombo();
+    },
+    overcharge: () => {
+      checkInHand("overcharge");
+      const cost = effectiveCost("overcharge", 2);
+      record({ kind: "overcharge", cost }, "overcharge()");
+      addCombo();
+    },
+    siphon: () => {
+      checkInHand("siphon");
+      const cost = effectiveCost("siphon", 0);
+      record({ kind: "siphon", cost }, "siphon()");
+      addCombo();
+    },
+    surge: () => {
+      checkInHand("surge");
+      checkUnique("surge");
+      const cost = effectiveCost("surge", 2);
+      record({ kind: "surge", cost }, "surge()");
+      addCombo();
+    },
+    bigRelease: () => {
+      checkInHand("bigRelease");
+      checkUnique("bigRelease");
+      const cost = effectiveCost("bigRelease", 4);
+      record({ kind: "bigRelease", cost }, "bigRelease()");
+      addCombo();
+      state.releasedThisTurn = true;
+    },
+    ironWall: () => {
+      checkInHand("ironWall");
+      checkUnique("ironWall");
+      const cost = effectiveCost("ironWall", 3);
+      record({ kind: "block", amount: 14, cost }, "ironWall()");
+      addCombo();
+    },
+    singularity: () => {
+      checkInHand("singularity");
+      checkUnique("singularity");
+      const cost = effectiveCost("singularity", 3);
+      record({ kind: "singularity", cost }, "singularity()");
+      addCombo();
+    },
+  };
+
   const toFnNames = (ids: CardId[]) => ids.map(id => CARDS[id]?.fn ?? id);
 
   const readApi: Record<string, () => unknown> = {
@@ -520,6 +651,8 @@ function run(req: RunRequest): RunResult {
     sameActionStreak:    () => state.sameActionStreak,
     comboIncrement:      () => state.comboIncrement,
     turn:                () => state.turn,
+    storedValue:         () => state.storedValue,
+    turnsSinceRelease:   () => state.turnsSinceRelease,
   };
 
   if (req.unlocks.deckInfo && req.deckSnapshot) {
@@ -610,12 +743,37 @@ function run(req: RunRequest): RunResult {
           : currentIntent.boosted
             ? `⚠ 敵の意図が強化されている！ あなたに ${actualDmg} ダメージ${blockedAmount > 0 ? `（${blockedAmount}ダメージをブロック）` : ""}`
             : `敵の攻撃！ あなたに ${actualDmg} ダメージ${blockedAmount > 0 ? `（${blockedAmount}ダメージをブロック）` : ""}`;
+
+      // storedValueGimmick（被弾時吸収・GC）: このターン境界でのstoredValue増減分を計算する
+      const svg = req.storedValueGimmick;
+      let storedValueDelta = 0;
+      if (svg?.kind === "absorb" && currentIntent.kind === "attack" && state.storedValue > 0) {
+        const absorbed = Math.floor(state.storedValue * svg.percent);
+        if (absorbed > 0) {
+          storedValueDelta -= absorbed;
+          consoleLogs.push(`[GIMMICK] ⚠ 被弾時吸収！ 変数を${absorbed}奪われた（残り${state.storedValue - absorbed}）`);
+        }
+      } else if (svg?.kind === "decay" && state.storedValue > 0) {
+        // 「release系を使ったか」はこの直後の次ターン準備で確定するため、ここでは今から迎える新ターンの
+        // turnsSinceRelease（releasedThisTurnがtrueなら0、falseなら+1）を先読みして判定する
+        const willBeStale = state.releasedThisTurn ? 0 : state.turnsSinceRelease + 1;
+        if (willBeStale >= svg.staleThreshold) {
+          const before = state.storedValue;
+          const after  = Math.floor(before * (1 - svg.decayRate));
+          if (after !== before) {
+            storedValueDelta -= (before - after);
+            consoleLogs.push(`[GIMMICK] ⚠ ガベージコレクション発動！ 変数 ${before} → ${after}`);
+          }
+        }
+      }
+
       actions.push({
         kind: "enemyTurn",
         intent: currentIntent,
         nextIntent,
         label: attackLabel,
         poisonDmg,
+        storedValueDelta: storedValueDelta !== 0 ? storedValueDelta : undefined,
       });
 
       // ワーカー内 state にも同じ変更を適用（以降のカード判定で正確な状態を使うため）
@@ -629,6 +787,9 @@ function run(req: RunRequest): RunResult {
       } else {
         state.player.block -= blockedAmount;
         state.player.hp = Math.max(0, state.player.hp - actualDmg);
+      }
+      if (storedValueDelta !== 0) {
+        state.storedValue = Math.max(0, state.storedValue + storedValueDelta);
       }
 
       // 次ターン準備（Main Clock・コンボ等）
@@ -646,6 +807,12 @@ function run(req: RunRequest): RunResult {
       state.sameActionKind      = null;
       state.sameActionStreak    = 0;
       state.maxSingleHitThisTurn = 0;
+      if (state.releasedThisTurn) {
+        state.turnsSinceRelease = 0;
+      } else {
+        state.turnsSinceRelease++;
+      }
+      state.releasedThisTurn = false;
       state.turn++;
       intentIdx = nextIdx;
       state.enemy.intent = nextIntent;
@@ -779,14 +946,26 @@ function run(req: RunRequest): RunResult {
         if (daemonExposed.has(fnName)) continue;
         daemonExposed.add(fnName);
 
-        if (fnName === "attack") {
+        // attack/block はfn名ではなくカードid単位でキャラ固有の実装に振り分ける
+        // （複数キャラが同じfn名"attack"/"block"を使うため、fn名だけで分岐すると混線する）
+        if (id === "lrAttack") {
           daemonApiNames.push("attack"); daemonApiValues.push(lrAttackFn);
-        } else if (fnName === "block") {
+        } else if (id === "obAttack") {
+          daemonApiNames.push("attack"); daemonApiValues.push(obAttackFn);
+        } else if (id === "lrBlock") {
           daemonApiNames.push("block"); daemonApiValues.push(lrBlockFn);
+        } else if (id === "obBlock") {
+          daemonApiNames.push("block"); daemonApiValues.push(obBlockFn);
+        } else if (fnName === "attack") {
+          daemonApiNames.push("attack"); daemonApiValues.push(legacyLib["attack"]);
+        } else if (fnName === "block") {
+          daemonApiNames.push("block"); daemonApiValues.push(legacyLib["block"]);
         } else if (fnName === "execute") {
           daemonApiNames.push("execute"); daemonApiValues.push(legacyLib["execute"]);
         } else if (lrLib[fnName]) {
           daemonApiNames.push(fnName); daemonApiValues.push(lrLib[fnName]);
+        } else if (obLib[fnName]) {
+          daemonApiNames.push(fnName); daemonApiValues.push(obLib[fnName]);
         } else if (legacyLib[fnName]) {
           daemonApiNames.push(fnName); daemonApiValues.push(legacyLib[fnName]);
         }
@@ -837,13 +1016,26 @@ function run(req: RunRequest): RunResult {
       if (exposed.has(fnName)) continue;
       exposed.add(fnName);
 
-      // Special cases for attack/block which can be legacy OR lr
-      if (fnName === "attack") {
+      // attack/block はfn名ではなくカードid単位でキャラ固有の実装に振り分ける
+      // （複数キャラが同じfn名"attack"/"block"を使うため、fn名だけで分岐すると混線する）
+      if (id === "lrAttack") {
         apiNames.push("attack");
         apiValues.push(lrAttackFn);
-      } else if (fnName === "block") {
+      } else if (id === "obAttack") {
+        apiNames.push("attack");
+        apiValues.push(obAttackFn);
+      } else if (id === "lrBlock") {
         apiNames.push("block");
         apiValues.push(lrBlockFn);
+      } else if (id === "obBlock") {
+        apiNames.push("block");
+        apiValues.push(obBlockFn);
+      } else if (fnName === "attack") {
+        apiNames.push("attack");
+        apiValues.push(legacyLib["attack"]);
+      } else if (fnName === "block") {
+        apiNames.push("block");
+        apiValues.push(legacyLib["block"]);
       } else if (fnName === "execute") {
         // handles both lrExecute and legacy execute
         apiNames.push("execute");
@@ -851,6 +1043,9 @@ function run(req: RunRequest): RunResult {
       } else if (lrLib[fnName]) {
         apiNames.push(fnName);
         apiValues.push(lrLib[fnName]);
+      } else if (obLib[fnName]) {
+        apiNames.push(fnName);
+        apiValues.push(obLib[fnName]);
       } else if (legacyLib[fnName]) {
         apiNames.push(fnName);
         apiValues.push(legacyLib[fnName]);

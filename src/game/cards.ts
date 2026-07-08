@@ -15,7 +15,17 @@ export type CardId =
   // Loop Runner Rare
   | "lrExecute" | "compilerOptimization" | "overclockBurst"
   // Loop Runner Fatal
-  | "stackOverflow";
+  | "stackOverflow"
+  // Object Breaker Starter
+  | "obAttack" | "obBlock" | "charge"
+  // Object Breaker Common
+  | "store" | "release" | "compact" | "defrag" | "fortify"
+  // Object Breaker Uncommon
+  | "double" | "overcharge" | "siphon"
+  // Object Breaker Rare
+  | "surge" | "bigRelease" | "ironWall"
+  // Object Breaker Fatal
+  | "singularity";
 
 export interface CardDef {
   id: CardId;
@@ -218,6 +228,106 @@ export const CARDS: Record<CardId, CardDef> = {
     description: "カード 3 枚引く。このターン手札の通常カード（属性なし）のコストを 0 にする。コスト: 2",
     rarity: "fatal", attributes: ["unique"],
   },
+
+  // ─── Object Breaker Starter ───────────────────────────────────
+  obAttack: {
+    id: "obAttack", fn: "attack",
+    signature: "attack()",
+    description: "敵に 5 ダメージ。コスト: 2",
+    rarity: "starter", attributes: [],
+  },
+  obBlock: {
+    id: "obBlock", fn: "block",
+    signature: "block()",
+    description: "ブロック +6。コスト: 2",
+    rarity: "starter", attributes: [],
+  },
+  charge: {
+    id: "charge", fn: "charge",
+    signature: "charge()",
+    description: "変数に +2 を格納する。コスト: 0",
+    rarity: "starter", attributes: ["unique"],
+  },
+
+  // ─── Object Breaker Common ─────────────────────────────────────
+  store: {
+    id: "store", fn: "store",
+    signature: "store()",
+    description: "変数に +4 を格納する。コスト: 2",
+    rarity: "common", attributes: [],
+  },
+  release: {
+    id: "release", fn: "release",
+    signature: "release()",
+    description: "変数の値だけ敵にダメージを与え、変数を 0 にする。コスト: 1",
+    rarity: "common", attributes: [],
+  },
+  compact: {
+    id: "compact", fn: "compact",
+    signature: "compact()",
+    description: "変数を半分にし、減った分だけ即座に敵にダメージ。コスト: 1",
+    rarity: "common", attributes: [],
+  },
+  defrag: {
+    id: "defrag", fn: "defrag",
+    signature: "defrag()",
+    description: "自分 HP +3 回復。使い捨て。コスト: 0",
+    rarity: "common", attributes: ["disposable"],
+  },
+  fortify: {
+    id: "fortify", fn: "fortify",
+    signature: "fortify()",
+    description: "ブロック += max(2, ⌊変数/5⌋)。コスト: 1",
+    rarity: "common", attributes: [],
+  },
+
+  // ─── Object Breaker Uncommon ───────────────────────────────────
+  double: {
+    id: "double", fn: "double",
+    signature: "double()",
+    description: "変数を 2 倍にする。コスト: 3",
+    rarity: "uncommon", attributes: ["unique"],
+  },
+  overcharge: {
+    id: "overcharge", fn: "overcharge",
+    signature: "overcharge()",
+    description: "変数に +8 を格納する。自分に 2 ダメージ。コスト: 2",
+    rarity: "uncommon", attributes: [],
+  },
+  siphon: {
+    id: "siphon", fn: "siphon",
+    signature: "siphon()",
+    description: "変数から 5 を消費し、自分 HP をその分回復。コスト: 0",
+    rarity: "uncommon", attributes: [],
+  },
+
+  // ─── Object Breaker Rare ───────────────────────────────────────
+  surge: {
+    id: "surge", fn: "surge",
+    signature: "surge()",
+    description: "変数を 1.5 倍にする（切り捨て）。コスト: 2",
+    rarity: "rare", attributes: ["unique"],
+  },
+  bigRelease: {
+    id: "bigRelease", fn: "bigRelease",
+    signature: "bigRelease()",
+    description: "変数の 1.5 倍だけ敵にダメージを与え、変数を 0 にする。コスト: 4",
+    rarity: "rare", attributes: ["unique"],
+  },
+  ironWall: {
+    id: "ironWall", fn: "ironWall",
+    signature: "ironWall()",
+    description: "ブロック +14。コスト: 3",
+    rarity: "rare", attributes: ["unique"],
+  },
+
+  // ─── Object Breaker Fatal（最上位・排出率1%）───────────────────
+  singularity: {
+    id: "singularity", fn: "singularity",
+    signature: "singularity()",
+    description: "変数を 3 倍にし、さらに +10 する。コスト: 3",
+    rarity: "fatal", attributes: ["unique"],
+  },
 };
 
 export const HAND_SIZE = 3; // 毎ターン開始時に3枚ドロー（StS方式：山札切れで捨て札シャッフル）
@@ -261,5 +371,25 @@ export function getCardBaseCost(id: CardId): number {
     case "overclockBurst": return 0;
     // LR Fatal
     case "stackOverflow": return 2;
+    // OB Starter
+    case "obAttack": return 2;
+    case "obBlock": return 2;
+    case "charge": return 0;
+    // OB Common
+    case "store": return 2;
+    case "release": return 1;
+    case "compact": return 1;
+    case "defrag": return 0;
+    case "fortify": return 1;
+    // OB Uncommon
+    case "double": return 3;
+    case "overcharge": return 2;
+    case "siphon": return 0;
+    // OB Rare
+    case "surge": return 2;
+    case "bigRelease": return 4;
+    case "ironWall": return 3;
+    // OB Fatal
+    case "singularity": return 3;
   }
 }

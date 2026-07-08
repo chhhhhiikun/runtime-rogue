@@ -17,12 +17,24 @@ export type StageGimmick =
   // 覚醒（ドラゴン）: turnThreshold ターン超過後、超過ターンごとに次意図を強化しつつコンボ増加量を減衰させる
   | { kind: "enrage"; turnThreshold: number; multiplierPerTurn: number; comboIncrementDecay: number };
 
+// Object Breaker の storedValue（蓄積変数）を狙った、既存gimmickと並行して働く対抗ギミック。
+// 1ステージにつき最大1つ、`gimmick`とは独立に設定できる。
+export type StoredValueGimmick =
+  // 上限キャップ: storedValueが threshold を超えると、超過分は即座に切り捨てられる
+  | { kind: "cap"; threshold: number }
+  // 被弾時吸収: 敵の攻撃行動のたび（ブロックの有無に関わらず）、storedValueの percent 分を奪われる
+  | { kind: "absorb"; percent: number }
+  // ガベージコレクション: release系(release/compact/bigRelease)を staleThreshold ターン使わないと、
+  // 以降そのままの間、毎ターン decayRate 分だけ減衰し続ける
+  | { kind: "decay"; staleThreshold: number; decayRate: number };
+
 export interface StageDef {
   name: string;
   hp: number;
   intentPattern: EnemyIntent[];
   isBoss?: boolean;
   gimmick?: StageGimmick;
+  storedValueGimmick?: StoredValueGimmick;
 }
 
 // 基準: attack() コスト1・ダメージ6、エネルギー10 → 最大60ダメージ/ターン
@@ -84,6 +96,8 @@ export const STAGES: StageDef[] = [
     ],
     // 1ターンで30以上のダメージを与えると、次の意図の値が2倍になる（無限ループの物量ゴリ押しへの牽制）
     gimmick: { kind: "overkill", threshold: 30, multiplier: 2 },
+    // storedValueが40を超えると超過分は噛み千切られる（Object Breakerの貯め込みへの牽制）
+    storedValueGimmick: { kind: "cap", threshold: 40 },
   },
   {
     // 約6〜7ターン。超高火力
@@ -98,6 +112,8 @@ export const STAGES: StageDef[] = [
     ],
     // 同じ関数を4回連続で呼ぶと、単調なループを見破られ敵が即座にブロック+8を得る
     gimmick: { kind: "monotony", streakThreshold: 4, blockGain: 8 },
+    // storedValueが55を超えると超過分は即座に切り捨てられる
+    storedValueGimmick: { kind: "cap", threshold: 55 },
   },
   {
     // 約8ターン。重ブロック主体
@@ -126,6 +142,8 @@ export const STAGES: StageDef[] = [
     ],
     // コンボ数が12に達すると、そのターン中はそれ以上コンボが増加しなくなる（無限コンボ積みへの牽制）
     gimmick: { kind: "overcastSeal", comboThreshold: 12 },
+    // storedValueが70を超えると超過分は即座に切り捨てられる
+    storedValueGimmick: { kind: "cap", threshold: 70 },
   },
   {
     // 約11ターン。猛攻
@@ -140,6 +158,8 @@ export const STAGES: StageDef[] = [
     ],
     // 1回の呼び出しで25以上のダメージを与えると（コンボを盛った大技等）、次の意図の値が1.5倍になる
     gimmick: { kind: "burstSpike", threshold: 25, multiplier: 1.5 },
+    // storedValueが85を超えると超過分は即座に切り捨てられる
+    storedValueGimmick: { kind: "cap", threshold: 85 },
   },
   {
     // 約13ターン。攻防バランス型
@@ -155,6 +175,8 @@ export const STAGES: StageDef[] = [
     ],
     // コンボ数が10に達した状態からさらに増加させるたび、見切られて2ダメージを受ける（無理な連撃への牽制）
     gimmick: { kind: "imbalance", threshold: 10, damage: 2 },
+    // storedValueが90を超えると超過分はその場で見切られ削られる
+    storedValueGimmick: { kind: "cap", threshold: 90 },
   },
   {
     // ボス。約15〜20ターン想定
@@ -171,5 +193,7 @@ export const STAGES: StageDef[] = [
     isBoss: true,
     // 15ターンを超えると、超過ターンごとに次意図が緩やかに強化されつつコンボ増加量も減衰していく（長期戦への牽制）
     gimmick: { kind: "enrage", turnThreshold: 15, multiplierPerTurn: 0.08, comboIncrementDecay: 0.3 },
+    // storedValueが120を超えると超過分は即座に切り捨てられる
+    storedValueGimmick: { kind: "cap", threshold: 120 },
   },
 ];

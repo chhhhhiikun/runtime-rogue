@@ -37,6 +37,9 @@ export interface CombatState {
   sameActionKind: string | null; // 直近に呼ばれたカードのkind（単眼看破ギミック用）
   sameActionStreak: number;      // 同じkindが連続で呼ばれた回数（単眼看破ギミック用）
   maxSingleHitThisTurn: number;  // このターン中、1回のカード呼び出しで与えた最大ダメージ（禁忌の一撃ギミック用）
+  storedValue: number;           // Object Breaker: 蓄積された値。ターンをまたいでリセットされない（戦闘開始時のみ0）
+  turnsSinceRelease: number;     // release系(release/compact/bigRelease)を最後に使ってから経過したターン数（GCギミック用）
+  releasedThisTurn: boolean;     // このターン中にrelease系を使ったか（ターン境界でturnsSinceReleaseに反映）
 }
 
 export const MAX_ENERGY = 10;
@@ -73,5 +76,8 @@ export function initialState(): CombatState {
     sameActionKind: null,
     sameActionStreak: 0,
     maxSingleHitThisTurn: 0,
+    storedValue: 0,
+    turnsSinceRelease: 0,
+    releasedThisTurn: false,
   };
 }

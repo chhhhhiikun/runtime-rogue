@@ -32,10 +32,15 @@ export const CHARACTERS: CharacterDef[] = [
     name: "Object Breaker",
     emoji: "💾",
     hp: 55,
-    starterDeck: [],
-    cardPool: { common: [], uncommon: [], rare: [], fatal: [] },
+    starterDeck: ["obAttack", "obBlock", "charge"],
+    cardPool: {
+      common: ["store", "release", "compact", "defrag", "fortify"],
+      uncommon: ["double", "overcharge", "siphon"],
+      rare: ["surge", "bigRelease", "ironWall"],
+      fatal: ["singularity"],
+    },
     concept: "変数に数値を蓄積・倍化させ、最後に一撃で解放する重戦車。",
-    available: false,
+    available: true,
   },
   {
     id: "bugInjector",
