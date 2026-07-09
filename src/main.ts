@@ -48,6 +48,13 @@ interface EditorPreset {
   daemonCode: string;
 }
 
+interface CharacterStats {
+  clears: number;
+  bestClearMs: number | null;
+  gameOvers: number;
+}
+type PlayStats = Record<string, CharacterStats>;
+
 // ── キャンバス状態 ──────────────────────────────────────────────────
 
 const canvasRoot = document.getElementById("canvas-root")!;
@@ -629,6 +636,63 @@ function closePresetModal(): void {
   document.getElementById("preset-modal")?.classList.add("hidden");
 }
 
+// ── プレイ履歴モーダル ────────────────────────────────────────────
+
+function buildStatsModal(): void {
+  const modal = document.createElement("div");
+  modal.id = "stats-modal";
+  modal.className = "pile-modal hidden";
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "pile-backdrop";
+  backdrop.addEventListener("click", closeStatsModal);
+
+  const popup = document.createElement("div");
+  popup.className = "pile-popup stats-popup";
+  popup.innerHTML = `
+    <div class="pile-popup-header">
+      <span class="pile-popup-title">📊 プレイ履歴</span>
+      <button class="pile-popup-close" id="stats-modal-close">✕</button>
+    </div>
+    <div id="stats-list" class="stats-list"></div>
+  `;
+
+  modal.append(backdrop, popup);
+  document.body.appendChild(modal);
+
+  document.getElementById("stats-modal-close")!.addEventListener("click", closeStatsModal);
+}
+
+function renderStatsList(): void {
+  const listEl = document.getElementById("stats-list")!;
+  const stats = loadStats();
+  listEl.innerHTML = "";
+
+  for (const char of CHARACTERS.filter(c => c.available)) {
+    const s = getCharStats(stats, char.id);
+    const row = document.createElement("div");
+    row.className = "stats-row";
+    row.innerHTML = `
+      <div class="stats-row-name">${char.emoji} ${char.name}</div>
+      <div class="stats-row-values">
+        <span>クリア回数: <b>${s.clears}</b></span>
+        <span>最短クリア: <b>${s.bestClearMs !== null ? formatClearTime(s.bestClearMs) : "-"}</b></span>
+        <span>ゲームオーバー: <b>${s.gameOvers}</b></span>
+      </div>
+    `;
+    listEl.appendChild(row);
+  }
+}
+
+function showStatsModal(): void {
+  renderStatsList();
+  document.getElementById("stats-modal")!.classList.remove("hidden");
+}
+
+function closeStatsModal(): void {
+  document.getElementById("stats-modal")?.classList.add("hidden");
+}
+
 // ── チュートリアルモーダル ────────────────────────────────────────────
 
 function buildTutorialModal(): void {
@@ -913,6 +977,57 @@ function savePresets(presets: EditorPreset[]): void {
   }
 }
 
+// ── プレイ履歴（クリア回数・最短クリア時間・ゲームオーバー回数） ──────
+// キャラクターごとにローカル保存する。タブを閉じる/中断した場合は
+// finish()の実際の勝敗判定を通らないため、ゲームオーバー回数には加算されない。
+
+function loadStats(): PlayStats {
+  try {
+    const raw = localStorage.getItem("runtime_rogue_stats");
+    if (!raw) return {};
+    return JSON.parse(raw) as PlayStats;
+  } catch {
+    return {};
+  }
+}
+
+function saveStats(stats: PlayStats): void {
+  try {
+    localStorage.setItem("runtime_rogue_stats", JSON.stringify(stats));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function getCharStats(stats: PlayStats, characterId: string): CharacterStats {
+  return stats[characterId] ?? { clears: 0, bestClearMs: null, gameOvers: 0 };
+}
+
+function recordClear(characterId: string, elapsedMs: number): void {
+  const stats = loadStats();
+  const cur = getCharStats(stats, characterId);
+  stats[characterId] = {
+    clears: cur.clears + 1,
+    bestClearMs: cur.bestClearMs === null ? elapsedMs : Math.min(cur.bestClearMs, elapsedMs),
+    gameOvers: cur.gameOvers,
+  };
+  saveStats(stats);
+}
+
+function recordGameOver(characterId: string): void {
+  const stats = loadStats();
+  const cur = getCharStats(stats, characterId);
+  stats[characterId] = { ...cur, gameOvers: cur.gameOvers + 1 };
+  saveStats(stats);
+}
+
+function formatClearTime(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}:${String(sec).padStart(2, "0")}`;
+}
+
 function saveCurrentAsPreset(name: string): void {
   const preset: EditorPreset = {
     name,
@@ -1116,6 +1231,7 @@ function tutorialDaemonLocked(): boolean {
 
 let selectedCharacter: CharacterDef = CHARACTERS[0];
 let PLAYER_MAX_HP = selectedCharacter.hp;
+let runStartTime = 0; // プレイ履歴用: 現在の周回(startGame)を開始したUnix時刻（tutorial中は未使用）
 
 let deckCards: CardId[]   = [];
 let runPlayerHp           = PLAYER_MAX_HP;
@@ -1138,6 +1254,29 @@ const LIBRARY_INITIAL_CODE = `// ライブラリ: ここで関数を定義して
 `;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// ── ログ再生速度 ────────────────────────────────────────────────────
+// バトルログ・演出（enemyTurn/action再生時のsleep）の速度倍率。1x/2x/4xを循環。
+const LOG_SPEEDS = [1, 2, 4] as const;
+function loadLogSpeed(): number {
+  const raw = localStorage.getItem("runtime_rogue_log_speed");
+  const n = raw ? Number(raw) : 1;
+  return LOG_SPEEDS.includes(n as (typeof LOG_SPEEDS)[number]) ? n : 1;
+}
+let logSpeed = loadLogSpeed();
+function scaledSleep(ms: number): Promise<void> {
+  return sleep(ms / logSpeed);
+}
+function cycleLogSpeed(): void {
+  const idx = LOG_SPEEDS.indexOf(logSpeed as (typeof LOG_SPEEDS)[number]);
+  logSpeed = LOG_SPEEDS[(idx + 1) % LOG_SPEEDS.length];
+  localStorage.setItem("runtime_rogue_log_speed", String(logSpeed));
+  updateLogSpeedBtn();
+}
+function updateLogSpeedBtn(): void {
+  const btn = document.getElementById("log-speed-btn");
+  if (btn) btn.textContent = `⏩ ${logSpeed}x`;
+}
 
 // ── メインメニュー ──────────────────────────────────────────────────
 
@@ -1183,6 +1322,7 @@ function buildCharSelectScreen(): void {
     <button class="char-tutorial-btn" id="char-preset-btn">🧩 エディタプリセット</button>
     <div class="char-grid" id="char-grid"></div>
     <button class="char-back-btn" id="char-back-btn">← 戻る</button>
+    <button class="char-stats-btn" id="char-stats-btn">📊 プレイ履歴</button>
   `;
 
   document.getElementById("char-tutorial-btn")!.addEventListener("click", () => {
@@ -1191,6 +1331,7 @@ function buildCharSelectScreen(): void {
   });
 
   document.getElementById("char-preset-btn")!.addEventListener("click", showPresetModal);
+  document.getElementById("char-stats-btn")!.addEventListener("click", showStatsModal);
 
   const grid = document.getElementById("char-grid")!;
   for (const char of CHARACTERS) {
@@ -1227,6 +1368,7 @@ function startGame(characterId: string): void {
   deckCards         = [...char.starterDeck];
   runPlayerHp       = PLAYER_MAX_HP;
   currentStageIndex = 0;
+  runStartTime      = Date.now();
   hideOverlay();
   closeRewardModal();
   clearLog();
@@ -1584,7 +1726,7 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
       appendLog(text, isEnemyHeal ? "heal" : "dmg");
       render(state, deck, getDisabledCards());
       updateDaemonDisplay();
-      await sleep(300);
+      await scaledSleep(300);
       if (state.player.hp <= 0) break;
       continue;
     }
@@ -1599,7 +1741,7 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
     appendLog(action.viaDaemon ? `🤖 ${text}` : text, isHeal ? "heal" : "dmg");
     render(state, deck, getDisabledCards());
     if (action.viaDaemon) updateDaemonDisplay();
-    await sleep(action.viaDaemon ? 60 : 180);
+    await scaledSleep(action.viaDaemon ? 60 : 180);
     if (state.enemy.hp <= 0) break;
   }
 
@@ -1754,6 +1896,7 @@ async function finish(win: boolean): Promise<void> {
     }
     appendLog("💀 敗北...", "sys");
     showOverlay("💀 GAME OVER");
+    recordGameOver(selectedCharacter.id);
     return;
   }
 
@@ -1778,6 +1921,7 @@ async function finish(win: boolean): Promise<void> {
     }
     appendLog("🏆 全ステージクリア！", "sys");
     showOverlay("🏆 CLEAR!");
+    recordClear(selectedCharacter.id, Date.now() - runStartTime);
     return;
   }
 
@@ -1981,6 +2125,8 @@ document.getElementById("add-lib-btn")!.addEventListener("click", () => {
 });
 
 document.getElementById("editor-preset-btn")!.addEventListener("click", showPresetModal);
+updateLogSpeedBtn();
+document.getElementById("log-speed-btn")!.addEventListener("click", cycleLogSpeed);
 
 document.getElementById("end-turn-btn")!.addEventListener("click", onEndTurn);
 document.getElementById("restart-btn")!.addEventListener("click", () => {
@@ -1995,6 +2141,7 @@ buildCyclerModal();
 buildRewardModal();
 buildVictoryModal();
 buildPresetModal();
+buildStatsModal();
 buildTutorialModal();
 buildReferenceModal();
 buildEnemyWidget();

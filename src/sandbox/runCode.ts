@@ -13,6 +13,16 @@ export const DEFAULT_UNLOCKS: UnlockFunctions = {
   arrowFn:    true,
 };
 
+// Worker はメッセージごとに独立したステートレス処理（RunRequest→RunResult）なので、
+// 毎回 new Worker() すると（特にdevサーバ経由でworker.tsを都度再フェッチするため）
+// 数百msの起動オーバーヘッドが発生する。使い回せる限り同じインスタンスを再利用する。
+// タイムアウト（無限ループ検知）時のみ実際に terminate() し、次回呼び出し時に新規生成する。
+let sharedWorker: Worker | null = null;
+function getWorker(): Worker {
+  if (!sharedWorker) sharedWorker = new CodeWorker();
+  return sharedWorker;
+}
+
 export function runUserCode(
   code: string,
   state: CombatState,
@@ -34,10 +44,11 @@ export function runUserCode(
   storedValueGimmick?: StoredValueGimmick,
 ): Promise<RunResult> {
   return new Promise((resolve) => {
-    const worker = new CodeWorker();
+    const worker = getWorker();
 
     const timer = setTimeout(() => {
       worker.terminate();
+      sharedWorker = null; // 無限ループを止めるため実際に破棄。次回呼び出し時に新規生成される
       resolve({
         actions: [],
         finalState: state,
@@ -48,13 +59,13 @@ export function runUserCode(
 
     worker.onmessage = (e: MessageEvent<RunResult>) => {
       clearTimeout(timer);
-      worker.terminate();
       resolve(e.data);
     };
 
     worker.onerror = (e: ErrorEvent) => {
       clearTimeout(timer);
       worker.terminate();
+      sharedWorker = null; // エラー後のworker状態が不定なため破棄し、次回は新規生成する
       resolve({
         actions: [],
         finalState: state,
