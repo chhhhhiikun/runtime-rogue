@@ -2,6 +2,7 @@ import type { CardId } from "./cards";
 import type { StageDef } from "./stages";
 
 export interface TutorialStep {
+  title: string;            // モーダル本文の先頭に見出しとして表示する
   stage: StageDef;
   deck: CardId[];          // このステージ専用の手札構成（キャラの初期デッキは使わない）
   allowedFns: string[];    // このステージで呼び出せる関数名だけを公開する
@@ -13,145 +14,152 @@ export interface TutorialStep {
   daemonEnabled?: boolean; // このステップ開始時にDAEMONウィジェットを表示し、コード・実行を有効化する
 }
 
-// Stage 1〜8 まで実装（以降のステージは追って追加していく）
+// Step1〜7（旧「for文」ステップは初心者には難しく実戦でもあまり使われないため削除）
 export const TUTORIAL_STEPS: TutorialStep[] = [
   {
+    title: "⚔ はじめの一撃を放とう",
     stage: {
       name: "練習用スライム",
-      hp: 3,
+      hp: 4,
       intentPattern: [{ kind: "attack", value: 4 }],
     },
-    deck: ["lrAttack"],
+    deck: ["tutorialAttack"],
     allowedFns: ["attack"],
     tip:
-      "`attack()` で攻撃できます。手札には `attack` が1枚あります。\n\n" +
+      "はじめまして、Runtime Rogueへようこそ！\n\n" +
+      "このゲームでは、実際のJavaScriptコードを書いて敵と戦います。まずは肩慣らしです。\n\n" +
+      "`attack()` を呼ぶと攻撃できます。手札には `attack` が1枚あります。\n\n" +
       "以下のコードを書いて **RUN** を押してみましょう。\n\n" +
-      "```js\nattack();\n```",
+      "```js\nattack(); // 敵を攻撃する\n```",
   },
   {
+    title: "🔁 くり返しの呪文、while",
     stage: {
       name: "3連撃スライム",
-      hp: 9,
+      hp: 12,
       intentPattern: [{ kind: "attack", value: 4 }],
     },
-    deck: ["lrAttack"],
+    deck: ["tutorialAttack"],
     allowedFns: ["attack"],
     tip:
-      "手札の `attack` はやっぱり1枚だけです。\n" +
-      "敵のHPは9なので、試しに書いてみましょう:\n\n" +
+      "手札の `attack` はやっぱり1枚だけです。今度は敵のHPが12あるので、同じように書いたらどうなるか試してみましょう。\n\n" +
       "```js\nattack();\nattack();\nattack();\n```",
     followUp: {
       tip:
-        "手札は1枚なのに3回書かれているため、実行するとエラーになります。\n" +
-        "**同じ関数は、手札にある枚数より多くコードに書くことはできません。**\n\n" +
-        "同じ行を何度も書く代わりに、ループを使いましょう。 " +
-        "ループの中に書けば「書いた回数」は1回とみなされます。\n\n" +
-        "```js\nwhile (true) {\n  attack();\n}\n```\n\n" +
+        "エラーが出てしまいましたね。大丈夫、ここからが本番です。\n\n" +
+        "手札は1枚なのに3回書かれているのが原因です。**同じ関数は、手札にある枚数より多くコードに書くことはできません。**\n\n" +
+        "同じ行を何度も書く代わりに、`while`（ループ）を使ってみましょう。\n\n" +
+        "```js\nwhile (true) {\n  attack(); // これが繰り返される\n}\n```\n\n" +
+        "`while (条件)` は「条件がtrueの間、くり返す」という意味です。`true` は「常に真」なので、`while (true)` は「ずっとくり返す」になります。ループの中に書けば「書いた回数」は1回とみなされます。\n\n" +
         "Main Clockがなくなるまで繰り返され、敵を倒せます。",
     },
   },
   {
+    title: "🛡 攻めと守り",
     stage: {
       name: "見張りゴブリン",
-      hp: 25,
+      hp: 20,
       intentPattern: [{ kind: "attack", value: 5 }],
     },
-    deck: ["lrAttack", "lrBlock"],
+    deck: ["tutorialAttack", "tutorialBlock"],
     allowedFns: ["attack", "block"],
     tip:
-      "敵はあなたにも攻撃してきます。`block()` を使うと、次に敵から受けるダメージを軽減できます。\n\n" +
-      "今回は `attack` と `block` が1枚ずつ手札にあります。両方使ってみましょう。\n\n" +
-      "```js\nwhile (true) {\n  attack();\n  block();\n}\n```\n\n" +
+      "今回の敵はあなたにも攻撃してきます。`block()` を使うと、次に敵から受けるダメージを軽減できます。\n\n" +
+      "`attack` と `block` が1枚ずつ手札にあります。たとえばこう書けます（他のやり方でも構いません）。\n\n" +
+      "```js\nwhile (true) {\n  attack(); // 攻撃する\n  block();  // 守りも固める\n}\n```\n\n" +
       "Main Clockがなくなり敵がまだ倒れていなければ、画面右上の **ターン終了** ボタンを押して次のターンへ進みましょう。",
   },
   {
+    title: "🏷 カードの個性、Unique と Disposable",
     stage: {
       name: "見習い人形",
-      hp: 20,
+      hp: 26,
       intentPattern: [{ kind: "attack", value: 4 }],
     },
-    deck: ["lrAttack", "noop", "patch"],
-    allowedFns: ["attack", "noop", "patch"],
+    deck: ["tutorialAttack", "tutorialBurst", "tutorialRecover"],
+    allowedFns: ["attack", "burst", "recover"],
     tip:
-      "`noop()` は何もしません（コンボ +1 のみ）。コスト0で使えます。試しに使ってみましょう:\n\n" +
-      "```js\nwhile (true) {\n  noop();\n  attack();\n}\n```",
+      "カードには特別な性質を持つものもあります。\n\n" +
+      "**Unique**: 1ターンに1回しか使えません（手札のカードに付く水色の「Unique」タグで確認できます）。\n" +
+      "**Disposable（使い捨て）**: 1回使うとそのステージ中は手札から無くなります（次のステージでは元に戻ります）。\n\n" +
+      "今回は、強力な一撃を放つ `burst()`（Unique）と、HPを回復する `recover()`（Disposable）が手札にあります。\n\n" +
+      "```js\nburst(); // 1ターンに1回だけの強い一撃\n\nwhile (true) {\n  attack(); // 通常の攻撃で残りを削る\n}\n```\n\n" +
+      "`burst()` はループの外で1回だけ呼んでいる点に注目してください。ループの中に入れると、2回目の呼び出しでエラーになります。",
     followUp: {
       tip:
-        "エラーになりましたね。`noop()` には **Unique** という属性がついていて、" +
-        "1ターンに1回しか呼べません（手札のカードに付く紫色の「Unique」タグで確認できます）。\n\n" +
-        "ループの外で1回だけ呼びましょう:\n\n" +
-        "```js\nnoop();\nwhile (true) {\n  attack();\n}\n```\n\n" +
-        "ちなみに `patch()` のような「使い捨て（Disposable）」属性のカードは、" +
-        "1回使うとそのステージ中は手札から無くなります（次のステージでは元に戻ります）。",
+        "エラーになったなら、`burst()` をループの中に入れていませんか？ **Unique** 属性のカードは1ターンに1回までです。ループの外に出してみましょう。",
     },
   },
   {
+    title: "🔀 条件で分岐する、if",
     stage: {
+      // このステップのコードは if 文（ループなし）なので、AUTOは1攻撃ごとにRUNし直す形になる。
+      // HPが大きいと「1ターン分の攻撃回数×ターン数」のRUNサイクルが積み重なり体感が遅くなるため、
+      // 1ターン（Main Clock 10 / 攻撃コスト1 = 最大10回）で倒し切れる程度に抑える
       name: "居眠り門番",
-      hp: 150,
+      hp: 32,
       intentPattern: [{ kind: "block", value: 6 }],
     },
-    deck: ["lrAttack"],
+    deck: ["tutorialAttack"],
     allowedFns: ["attack", "mainClock", "endTurn"],
     tip:
-      "この敵はブロックしかしてこないので安心して試せます。\n\n" +
-      "今回は `while` ループの代わりに `if` 文を使い、**⟳ AUTO** ボタンで自動的に繰り返させてみましょう。\n\n" +
-      "```js\nif (mainClock() > 0) {\n  attack();\n} else {\n  endTurn();\n}\n```\n\n" +
-      "このコードを書いたら、RUNの隣にある **⟳ AUTO** ボタンを押してください。" +
-      "Main Clockが残っていれば攻撃し、0になったら自動でターンを終了する、を繰り返します。",
+      "この敵はブロックしかしてこないので、安心していろいろ試せます。\n\n" +
+      "Main Clockが残っている間は攻撃し、無くなったらターンを終える——そんな判断をコードにするにはどうしたらいいでしょう？\n\n" +
+      "`if` 文を使うと、条件によって処理を変えられます。たとえばこう書けます。\n\n" +
+      "```js\nif (mainClock() > 0) {\n  attack();  // Main Clockが残っていれば攻撃\n} else {\n  endTurn(); // 残っていなければターンを終える\n}\n```\n\n" +
+      "このコードを書いたら、RUNの隣にある **⟳ AUTO** ボタンを押してみましょう。書いた判断が自動でくり返されます。",
   },
   {
+    title: "⚡ あなただけの必殺技を作ろう",
     stage: {
       name: "しつこいゴブリン",
-      hp: 32,
-      intentPattern: [{ kind: "attack", value: 7 }],
-    },
-    deck: ["lrAttack", "lrBlock"],
-    allowedFns: ["attack", "block"],
-    tip:
-      "`while` の他に `for` 文でも繰り返せます。「何回繰り返すか」を決められるのが特徴です。\n\n" +
-      "例えば「まず attack() を5回、残りは block() に使う」と書けます:\n\n" +
-      "```js\nfor (let i = 0; i < 5; i++) {\n  attack();\n}\nwhile (true) {\n  block();\n}\n```\n\n" +
-      "`for (let i = 0; i < 5; i++)` は「iが0から始まり5未満の間、iを1ずつ増やしながら繰り返す」" +
-      "という意味で、結果的に5回だけ繰り返されます。",
-  },
-  {
-    stage: {
-      name: "反復するゴブリン",
-      hp: 30,
+      hp: 40,
       intentPattern: [{ kind: "attack", value: 5 }],
     },
-    deck: ["lrAttack", "lrBlock"],
+    deck: ["tutorialAttack", "tutorialBlock"],
     allowedFns: ["attack", "block", "mainClock"],
     unlockFunctionKw: true,
     tip:
-      "`function` を使うと、自分だけの関数を定義できます。これまで書いてきたループを、" +
-      "ひとつの関数にまとめてみましょう。\n\n" +
-      "```js\nfunction comboLoop() {\n  while (mainClock() > 0) {\n    attack();\n    block();\n  }\n}\n\ncomboLoop();\n```\n\n" +
-      "さらに、画面上部の **📚 ライブラリ追加** ボタンを押すと、常に参照できる専用のエディタが追加されます。\n" +
-      "`comboLoop` の定義をそちらに移し、メインのエディタには `comboLoop();` の呼び出しだけを残してみましょう。\n" +
-      "ライブラリに書いた関数は、メインエディタからいつでも呼び出せます。",
+      "ここまでは、用意された道具を組み合わせるだけでした。ここから先は少し違います。\n\n" +
+      "あんなのあったら良いな…と、考えてみましょう。\n\n" +
+      "言葉にできるものは何でも作れます！\n\n" +
+      "`function` を使うと、自分だけの関数を定義できます。これまで書いてきたループを、ひとつの関数にまとめてみましょう。\n\n" +
+      "```js\n// 関数を作成\nfunction comboLoop() {\n  while (mainClock() > 0) {\n    attack();\n    block();\n  }\n}\n\n// 作成した関数を使用！\ncomboLoop();\n```\n\n" +
+      "名前も中身も自由です。上の例は一つの案にすぎません。",
+    followUp: {
+      tip:
+        "エラーになった？よくあることです。むしろ、何か新しいことを試した証拠です。\n\n" +
+        "こんな発想もあります。\n\n" +
+        "```js\n// 関数を作成\nfunction guard() {\n  while (mainClock() > 0) {\n    block();\n    if (mainClock() > 0) attack();\n  }\n}\n\n// 作成した関数を使用！\nguard();\n```\n\n" +
+        "迷ったら、下の「← 元の説明を見る」でさっきの説明を見比べられます。",
+    },
   },
   {
+    title: "🤖 動き続けるプログラム、DAEMON",
     stage: {
       name: "巣ごもりオーガ",
       hp: 60,
       intentPattern: [{ kind: "attack", value: 6 }],
     },
-    deck: ["lrAttack", "lrBlock"],
-    allowedFns: ["attack", "block", "mainClock", "deploy", "daemonCost"],
+    deck: ["tutorialAttack", "tutorialBlock"],
+    allowedFns: ["attack", "block", "mainClock", "daemonCost"],
     daemonEnabled: true,
     tip:
       "最後に **DAEMON** を紹介します。DAEMONはメインエディタとは別に動く「常駐プログラム」で、" +
       "**戦闘開始時と、それ以降は毎ターンの開始時に自動的に実行**されます。使う資源もMain Clockとは別の**Daemon Cost**です。\n\n" +
-      "まず、手札のカードをDaemonへ配置する `deploy(名前)` を使います。配置されたカードは手札からは無くなりますが、" +
-      "以後Daemonから呼び出せるようになります（配置コストとして、そのカードの基本コストの2倍がMain Clockから消費されます）。\n\n" +
-      "メインエディタに以下を書いて実行してみましょう:\n\n" +
-      "```js\ndeploy(\"attack\");\nwhile (mainClock() > 0) {\n  block();\n}\n```\n\n" +
-      "`attack` をDaemonに任せたので、これ以降メインエディタでは `attack()` は呼べなくなります。" +
-      "代わりに、画面に現れた **DAEMON** エディタに以下を書いてください:\n\n" +
-      "```js\nwhile (daemonCost() > 0) {\n  attack();\n}\n```\n\n" +
-      "DAEMONに書いたコードは毎ターンの開始時に自動で実行されます。**ターン終了**ボタンを何度か押して、" +
-      "自分では `attack()` を呼んでいないのに敵へダメージが入り続けることを確認してみましょう。",
+      "あなたが考えた動きを、あなたが見ていない間も実行させる——そんなことができます。\n\n" +
+      "まず、画面下の **CONSOLE** パネルに次のように入力してEnterを押してみましょう。\n\n" +
+      "```\ndeploy attack\n```\n\n" +
+      "`attack` カードがDaemonへ配置されます（配置コストとして、そのカードの基本コストの2倍がMain Clockから消費されます）。\n\n" +
+      "`attack` をDaemonに任せたので、これ以降メインエディタでは `attack()` は呼べなくなります。メインエディタには以下を書いてください。\n\n" +
+      "```js\nwhile (mainClock() > 0) {\n  block(); // 攻撃はDaemonに任せて、こちらは守りに専念\n}\n```\n\n" +
+      "そして、画面に現れた **DAEMON** エディタに以下を書いてください。\n\n" +
+      "```js\nwhile (daemonCost() > 0) {\n  attack(); // 毎ターン自動で実行される\n}\n```\n\n" +
+      "**ターン終了**ボタンを何度か押して、自分では `attack()` を呼んでいないのに敵へダメージが入り続けることを確認してみましょう。",
   },
 ];
+
+// チュートリアル完了時に表示するメッセージ
+export const TUTORIAL_COMPLETE_OVERLAY = "🎓 チュートリアル完了！"; // オーバーレイ用（短く）
+export const TUTORIAL_COMPLETE_LOG =
+  "あんなのあったら良いな、と思ったものが、もう作れるようになっています。ここから先は、あなた次第です。"; // ログ用（Step6の2行に回帰）

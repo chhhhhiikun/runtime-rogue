@@ -25,7 +25,9 @@ export type CardId =
   // Object Breaker Rare
   | "surge" | "bigRelease" | "ironWall"
   // Object Breaker Fatal
-  | "singularity";
+  | "singularity"
+  // チュートリアル専用（数値固定・コンボ計算なし。本編の報酬プールには含めない）
+  | "tutorialAttack" | "tutorialBlock" | "tutorialBurst" | "tutorialRecover";
 
 export interface CardDef {
   id: CardId;
@@ -328,9 +330,35 @@ export const CARDS: Record<CardId, CardDef> = {
     description: "変数を 3 倍にし、さらに +10 する。コスト: 3",
     rarity: "fatal", attributes: ["unique"],
   },
+
+  // ─── チュートリアル専用（コンボ計算なしの固定値） ───────────────
+  tutorialAttack: {
+    id: "tutorialAttack", fn: "attack",
+    signature: "attack()",
+    description: "敵に 4 ダメージ。コスト: 1",
+    rarity: "starter", attributes: [],
+  },
+  tutorialBlock: {
+    id: "tutorialBlock", fn: "block",
+    signature: "block()",
+    description: "ブロック +4。コスト: 1",
+    rarity: "starter", attributes: [],
+  },
+  tutorialBurst: {
+    id: "tutorialBurst", fn: "burst",
+    signature: "burst()",
+    description: "敵に 10 ダメージ。1ターンに1回だけ。コスト: 2",
+    rarity: "starter", attributes: ["unique"],
+  },
+  tutorialRecover: {
+    id: "tutorialRecover", fn: "recover",
+    signature: "recover()",
+    description: "自分 HP +8 回復。使い捨て。コスト: 0",
+    rarity: "starter", attributes: ["disposable"],
+  },
 };
 
-export const HAND_SIZE = 3; // 毎ターン開始時に3枚ドロー（StS方式：山札切れで捨て札シャッフル）
+export const HAND_SIZE = 3; // 毎ターン開始時に3枚ドロー（山札切れで捨て札シャッフル）
 
 // カードの基礎コスト（動的コストのカードは 0 を返す）。Deploy コスト計算にも使う。
 export function getCardBaseCost(id: CardId): number {
@@ -391,5 +419,10 @@ export function getCardBaseCost(id: CardId): number {
     case "ironWall": return 3;
     // OB Fatal
     case "singularity": return 3;
+    // チュートリアル専用
+    case "tutorialAttack": return 1;
+    case "tutorialBlock": return 1;
+    case "tutorialBurst": return 2;
+    case "tutorialRecover": return 0;
   }
 }

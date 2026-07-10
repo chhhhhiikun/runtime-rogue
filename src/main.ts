@@ -5,7 +5,7 @@ import { MAX_ENERGY, MAX_DAEMON_COST, type CombatState } from "./game/state";
 import { HAND_SIZE, CARDS, getCardBaseCost, type CardId } from "./game/cards";
 import { CHARACTERS, getCharacter, getAllCharacterCards, type CharacterDef } from "./game/characters";
 import { STAGES, type StageDef, type StageGimmick, type StoredValueGimmick } from "./game/stages";
-import { TUTORIAL_STEPS } from "./game/tutorial";
+import { TUTORIAL_STEPS, TUTORIAL_COMPLETE_OVERLAY, TUTORIAL_COMPLETE_LOG } from "./game/tutorial";
 import { Deck } from "./game/deck";
 import { applyAction } from "./game/actions";
 import { runUserCode, DEFAULT_UNLOCKS, type UnlockFunctions, type DeckSnapshot } from "./sandbox/runCode";
@@ -1229,6 +1229,14 @@ function tutorialDaemonLocked(): boolean {
   return tutorialMode && !TUTORIAL_STEPS[tutorialStepIndex]?.daemonEnabled;
 }
 
+// runUserCode()に渡すcharacterCards: チュートリアル中はキャラの全カードプールではなく、
+// そのステップ専用のdeck（tutorialAttack等）だけを公開する
+function getRunCharacterCards(): CardId[] {
+  return tutorialMode
+    ? TUTORIAL_STEPS[tutorialStepIndex].deck
+    : getAllCharacterCards(selectedCharacter);
+}
+
 let selectedCharacter: CharacterDef = CHARACTERS[0];
 let PLAYER_MAX_HP = selectedCharacter.hp;
 let runStartTime = 0; // プレイ履歴用: 現在の周回(startGame)を開始したUnix時刻（tutorial中は未使用）
@@ -1454,20 +1462,52 @@ function buildTutorialWidget(): void {
   tutorialWidgetEl = widget;
 }
 
-async function updateTutorialWidget(overrideTip?: string): Promise<void> {
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+async function updateTutorialWidget(): Promise<void> {
   const bodyEl = document.getElementById("tutorial-widget-body");
   if (!bodyEl) return;
   const step = TUTORIAL_STEPS[tutorialStepIndex];
-  const title = `<div class="tutorial-widget-title">${tutorialStepIndex + 1} / ${TUTORIAL_STEPS.length}: ${step.stage.name}</div>`;
-  bodyEl.innerHTML = title + await renderTutorialMarkdown(overrideTip ?? step.tip);
+  const header =
+    `<div class="tutorial-widget-title">${tutorialStepIndex + 1} / ${TUTORIAL_STEPS.length}: ${step.stage.name}</div>` +
+    `<h3 class="tutorial-heading">${escapeHtml(step.title)}</h3>`;
+  bodyEl.innerHTML = header + await renderTutorialMarkdown(step.tip);
+}
+
+// followUp（ヒント）専用の常駐ウィジェット。元のtipを表示する📘 TUTORIALとは別に、
+// エラー発生時にもう1枚出現し、両方を見比べられるようにする。次のステップに進むと消える。
+let tutorialHintWidgetEl: HTMLElement | null = null;
+
+function removeTutorialHintWidget(): void {
+  tutorialHintWidgetEl?.remove();
+  tutorialHintWidgetEl = null;
+}
+
+async function showTutorialHintWidget(tip: string): Promise<void> {
+  removeTutorialHintWidget();
+  const { widget } = createWidget("tutorial-hint-widget", "💡 HINT", 610, 560, 380, `
+    <div id="tutorial-hint-widget-body" class="tutorial-widget-body"></div>
+  `);
+  widget.classList.add("tutorial-widget");
+  setupResize(widget, (_w, h) => {
+    const body = document.getElementById("tutorial-hint-widget-body");
+    if (body) body.style.height = `${Math.max(60, h - 56)}px`;
+  });
+  tutorialHintWidgetEl = widget;
+  document.getElementById("tutorial-hint-widget-body")!.innerHTML = await renderTutorialMarkdown(tip);
 }
 
 async function showTutorialTipModal(): Promise<void> {
   const step = TUTORIAL_STEPS[tutorialStepIndex];
+  removeTutorialHintWidget(); // 新しいステップに入るので、前のステップのヒントは消す
+
   document.getElementById("tutorial-modal-title")!.textContent =
     `📘 チュートリアル ${tutorialStepIndex + 1} / ${TUTORIAL_STEPS.length}: ${step.stage.name}`;
   const modalBody = document.getElementById("tutorial-modal-body")!;
-  modalBody.innerHTML = await renderTutorialMarkdown(step.tip);
+  modalBody.innerHTML =
+    `<h3 class="tutorial-heading">${escapeHtml(step.title)}</h3>` + await renderTutorialMarkdown(step.tip);
   document.getElementById("tutorial-modal")!.classList.remove("hidden");
   updateTutorialWidget();
 
@@ -1486,14 +1526,15 @@ async function showTutorialTipModal(): Promise<void> {
   };
 }
 
-// バトル中にエラーが起きた際、少し待ってから追加のヒントをポップアップ＋常駐ウィジェットに表示する。
+// バトル中にエラーが起きた際、少し待ってからヒントをポップアップ＋専用の常駐ウィジェットに表示する。
+// 元のtipを表示する📘 TUTORIALウィジェットはそのまま残り、両方を見比べられる。
 // バトルは中断しない（プレイヤーはそのままコードを直して再RUNできる）。
 async function showTutorialFollowUp(tip: string): Promise<void> {
   await sleep(1200);
   document.getElementById("tutorial-modal-title")!.textContent = "📘 ヒント";
   document.getElementById("tutorial-modal-body")!.innerHTML = await renderTutorialMarkdown(tip);
   document.getElementById("tutorial-modal")!.classList.remove("hidden");
-  updateTutorialWidget(tip);
+  showTutorialHintWidget(tip);
 
   const startBtn = document.getElementById("tutorial-start-btn")!;
   startBtn.textContent = "わかった";
@@ -1533,6 +1574,7 @@ function endTutorialAndReturn(): void {
   activeStages = STAGES;
   setTutorialUIVisible(true);
   removeTutorialWidget();
+  removeTutorialHintWidget();
   clearAllEditors();
   restoreEditorsFromStorage();
   showCharSelectScreen();
@@ -1649,7 +1691,7 @@ async function startBattleInner(): Promise<void> {
   render(state, deck);
 
   // 戦闘開始時にもDaemonを1回実行する（デプロイ済みが0枚なら実質何もしない）
-  const characterCards = getAllCharacterCards(selectedCharacter);
+  const characterCards = getRunCharacterCards();
   const libraryCode = entries
     .filter(e => e.kind === "library")
     .map(e => getCode(e.editor))
@@ -1689,7 +1731,7 @@ function toggleAutorun(entry: EditorEntry): void {
 // AUTO が有効な限り同じエディタを自動で再実行し続ける。
 function maybeContinueAutorun(entry: EditorEntry): void {
   if (entry.autorun && !over) {
-    setTimeout(() => onRun(entry), 250);
+    scaledSleep(250).then(() => onRun(entry));
   }
 }
 
@@ -1783,7 +1825,12 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
     }
     if (tutorialMode) {
       const followUp = TUTORIAL_STEPS[tutorialStepIndex].followUp;
-      if (followUp) showTutorialFollowUp(followUp.tip);
+      // エラーと同時に敵を倒した/やられた場合、1200ms遅延で出るヒントが
+      // 後からクリア/敗北モーダルの上に重なって表示されてしまうため、そのケースは出さない
+      const stageAlreadyOver =
+        result.combatResult === "victory" || result.combatResult === "defeat" ||
+        state.enemy.hp <= 0 || state.player.hp <= 0;
+      if (followUp && !stageAlreadyOver) showTutorialFollowUp(followUp.tip);
     }
   } else if (result.info) {
     appendLog(result.info, "err");
@@ -1832,7 +1879,7 @@ async function onRun(entry: EditorEntry): Promise<void> {
     .join("\n\n") || undefined;
 
   const snap         = devUnlocks.deckInfo ? getDeckSnapshot() : undefined;
-  const characterCards = getAllCharacterCards(selectedCharacter);
+  const characterCards = getRunCharacterCards();
   const stage        = activeStages[currentStageIndex];
 
   const allowedFns = tutorialMode ? TUTORIAL_STEPS[tutorialStepIndex].allowedFns : undefined;
@@ -1856,7 +1903,7 @@ async function onEndTurn(): Promise<void> {
   busy = true;
   setAllRunButtons(false);
 
-  const characterCards = getAllCharacterCards(selectedCharacter);
+  const characterCards = getRunCharacterCards();
   const stage          = activeStages[currentStageIndex];
   const libraryCode = entries
     .filter(e => e.kind === "library")
@@ -1889,6 +1936,7 @@ async function finish(win: boolean): Promise<void> {
     if (tutorialMode) {
       appendLog("💀 やられてしまった…もう一度挑戦しよう", "sys");
       showOverlay("💀 もう一度！");
+      removeTutorialHintWidget(); // 前回の挑戦で出たヒントは、リトライ時にはリセットする
       await sleep(1200);
       hideOverlay();
       startBattle();
@@ -1912,8 +1960,8 @@ async function finish(win: boolean): Promise<void> {
 
   if (currentStageIndex >= totalStages() - 1) {
     if (tutorialMode) {
-      appendLog("🎓 チュートリアル完了！", "sys");
-      showOverlay("🎓 チュートリアル完了！");
+      appendLog(TUTORIAL_COMPLETE_LOG, "sys");
+      showOverlay(TUTORIAL_COMPLETE_OVERLAY);
       await sleep(1800);
       hideOverlay();
       endTutorialAndReturn();

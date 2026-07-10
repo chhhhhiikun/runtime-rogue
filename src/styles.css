@@ -1155,12 +1155,16 @@ body {
   line-height: 1.7;
   font-size: 0.9rem;
   color: var(--text);
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .tutorial-modal-body code,
 .tutorial-modal-body { font-family: inherit; }
 .tutorial-modal-footer {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   padding: 0 20px 18px;
 }
 
@@ -1181,6 +1185,12 @@ body {
 .tutorial-modal-body strong,
 .tutorial-widget-body strong {
   color: var(--energy);
+}
+.tutorial-heading {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 10px;
 }
 .tutorial-code {
   background: #1a1f2b;

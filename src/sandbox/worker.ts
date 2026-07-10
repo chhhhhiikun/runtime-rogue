@@ -545,6 +545,46 @@ function run(req: RunRequest): RunResult {
     }
   };
 
+  // チュートリアル専用attack/block（コンボ計算なしの固定値）
+  const tutorialAttackFn = (): void => {
+    if (availableSource().includes("tutorialAttack")) {
+      checkInHand("tutorialAttack");
+      const cost = effectiveCost("tutorialAttack", 1);
+      record({ kind: "attack", amount: 4, cost }, "attack()");
+      addCombo();
+    } else {
+      legacyLib.attack!(0);
+    }
+  };
+
+  const tutorialBlockFn = (): void => {
+    if (availableSource().includes("tutorialBlock")) {
+      checkInHand("tutorialBlock");
+      const cost = effectiveCost("tutorialBlock", 1);
+      record({ kind: "block", amount: 4, cost }, "block()");
+      addCombo();
+    } else {
+      legacyLib.block!(0);
+    }
+  };
+
+  const tutorialLib: Record<string, (...args: unknown[]) => void> = {
+    burst: () => {
+      checkInHand("tutorialBurst");
+      checkUnique("tutorialBurst");
+      const cost = effectiveCost("tutorialBurst", 2);
+      record({ kind: "attack", amount: 10, cost }, "burst()");
+      addCombo();
+    },
+    recover: () => {
+      checkInHand("tutorialRecover");
+      const cost = effectiveCost("tutorialRecover", 0);
+      record({ kind: "heal", amount: 8, cost }, "recover()");
+      addCombo();
+      disposeCard("tutorialRecover");
+    },
+  };
+
   const obLib: Record<string, (...args: unknown[]) => void> = {
     charge: () => {
       checkInHand("charge");
@@ -952,10 +992,14 @@ function run(req: RunRequest): RunResult {
           daemonApiNames.push("attack"); daemonApiValues.push(lrAttackFn);
         } else if (id === "obAttack") {
           daemonApiNames.push("attack"); daemonApiValues.push(obAttackFn);
+        } else if (id === "tutorialAttack") {
+          daemonApiNames.push("attack"); daemonApiValues.push(tutorialAttackFn);
         } else if (id === "lrBlock") {
           daemonApiNames.push("block"); daemonApiValues.push(lrBlockFn);
         } else if (id === "obBlock") {
           daemonApiNames.push("block"); daemonApiValues.push(obBlockFn);
+        } else if (id === "tutorialBlock") {
+          daemonApiNames.push("block"); daemonApiValues.push(tutorialBlockFn);
         } else if (fnName === "attack") {
           daemonApiNames.push("attack"); daemonApiValues.push(legacyLib["attack"]);
         } else if (fnName === "block") {
@@ -966,6 +1010,8 @@ function run(req: RunRequest): RunResult {
           daemonApiNames.push(fnName); daemonApiValues.push(lrLib[fnName]);
         } else if (obLib[fnName]) {
           daemonApiNames.push(fnName); daemonApiValues.push(obLib[fnName]);
+        } else if (tutorialLib[fnName]) {
+          daemonApiNames.push(fnName); daemonApiValues.push(tutorialLib[fnName]);
         } else if (legacyLib[fnName]) {
           daemonApiNames.push(fnName); daemonApiValues.push(legacyLib[fnName]);
         }
@@ -1024,12 +1070,18 @@ function run(req: RunRequest): RunResult {
       } else if (id === "obAttack") {
         apiNames.push("attack");
         apiValues.push(obAttackFn);
+      } else if (id === "tutorialAttack") {
+        apiNames.push("attack");
+        apiValues.push(tutorialAttackFn);
       } else if (id === "lrBlock") {
         apiNames.push("block");
         apiValues.push(lrBlockFn);
       } else if (id === "obBlock") {
         apiNames.push("block");
         apiValues.push(obBlockFn);
+      } else if (id === "tutorialBlock") {
+        apiNames.push("block");
+        apiValues.push(tutorialBlockFn);
       } else if (fnName === "attack") {
         apiNames.push("attack");
         apiValues.push(legacyLib["attack"]);
@@ -1046,6 +1098,9 @@ function run(req: RunRequest): RunResult {
       } else if (obLib[fnName]) {
         apiNames.push(fnName);
         apiValues.push(obLib[fnName]);
+      } else if (tutorialLib[fnName]) {
+        apiNames.push(fnName);
+        apiValues.push(tutorialLib[fnName]);
       } else if (legacyLib[fnName]) {
         apiNames.push(fnName);
         apiValues.push(legacyLib[fnName]);
