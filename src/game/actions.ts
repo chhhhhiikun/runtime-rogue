@@ -1,4 +1,5 @@
 import type { CombatState, EnemyIntent } from "./state";
+import type { CardId } from "./cards";
 
 export type ActionCore =
   // Legacy actions
@@ -54,7 +55,9 @@ export type ActionCore =
   | { kind: "enemyTurn"; intent: EnemyIntent; nextIntent: EnemyIntent; label: string; poisonDmg: number; storedValueDelta?: number };
 
 // viaDaemon: Daemon による自動実行由来のアクションかどうか（ログ表示・アニメーション分岐用）
-export type Action = ActionCore & { viaDaemon?: boolean };
+// cardId: このアクションを発生させた具体的なカードid（実行行・カードハイライト用。record()経由のアクションのみ付与）
+// sourceLine: ユーザーが書いたコード内の行番号（1-indexed、メイン/DAEMONエディタ自身のコード範囲内のみ。同上）
+export type Action = ActionCore & { viaDaemon?: boolean; cardId?: CardId; sourceLine?: number };
 
 function damageEnemy(s: CombatState, raw: number): number {
   let dmg = raw;

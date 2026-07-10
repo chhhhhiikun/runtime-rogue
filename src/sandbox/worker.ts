@@ -165,16 +165,46 @@ function run(req: RunRequest): RunResult {
     }
   };
 
+  // 実行行ハイライト・カードハイライト用: 直前にcheckInHand()でチェックされたカードid
+  let lastCheckedCardId: CardId | null = null;
+
+  // "use strict";\n + (prefixCode + "\n\n")? を差し引き、ユーザーが書いたコード自身の行番号に変換する。
+  // prefixCode（ライブラリ）領域や解決失敗時はundefinedを返す（ライブラリ行はハイライト対象外）
+  const computeSourceLine = (rawLine: number): number | undefined => {
+    const offset = req.prefixCode ? req.prefixCode.split("\n").length + 2 : 1;
+    const userLine = rawLine - offset;
+    return userLine > 0 ? userLine : undefined;
+  };
+
+  // record()呼び出し時点のスタックトレースから、new Function生成コード内の行番号を推定する（ベストエフォート）。
+  // 実行スクリプトの末尾に付与した//# sourceURL=を目印にスタックフレームを探す
+  const captureSourceLine = (): number | undefined => {
+    const stack = new Error().stack;
+    if (!stack) return undefined;
+    const marker = execMode === "daemon" ? "rr-daemon.js" : "rr-main.js";
+    for (const line of stack.split("\n")) {
+      if (!line.includes(marker)) continue;
+      const m = line.match(/:(\d+):\d+\)?\s*$/);
+      if (m) return computeSourceLine(parseInt(m[1], 10));
+    }
+    return undefined;
+  };
+
   const record = (a: Extract<Action, { cost: number }>, label: string) => {
     const cost = a.cost;
     const dmgBefore = state.damageDealtThisTurn;
+    const withMeta: Action = {
+      ...a,
+      cardId: lastCheckedCardId ?? undefined,
+      sourceLine: captureSourceLine(),
+    };
     if (execMode === "daemon") {
       if (cost > state.daemonCost) {
         throw new DaemonCostInsufficientException(
           `Daemon Cost不足: ${label} には ${cost} 必要ですが残り ${state.daemonCost} です`,
         );
       }
-      const daemonAction = { ...a, viaDaemon: true };
+      const daemonAction = { ...withMeta, viaDaemon: true };
       applyAction(state, daemonAction, "daemon");
       actions.push(daemonAction);
     } else {
@@ -183,8 +213,8 @@ function run(req: RunRequest): RunResult {
           `エネルギー不足: ${label} には ${cost} 必要ですが残り ${state.energy} です`,
         );
       }
-      applyAction(state, a);
-      actions.push(a);
+      applyAction(state, withMeta);
+      actions.push(withMeta);
     }
 
     // 単眼看破（サイクロプス）判定用: 同じ関数(kind)が連続で呼ばれた回数を記録
@@ -243,6 +273,7 @@ function run(req: RunRequest): RunResult {
   const availableSource = (): CardId[] => (execMode === "daemon" ? deployedCardIds : runtimeHand);
 
   const checkInHand = (id: CardId): void => {
+    lastCheckedCardId = id; // 実行行/カードハイライト用: record()がこのidを参照する
     if (!availableSource().includes(id)) {
       const def = CARDS[id];
       const place = execMode === "daemon" ? "Daemonにデプロイされて" : "手札にあり";
@@ -1025,7 +1056,7 @@ function run(req: RunRequest): RunResult {
 
       try {
         // eslint-disable-next-line no-new-func
-        const daemonFn = new Function(...daemonApiNames, `"use strict";\n${daemonFullCode}`);
+        const daemonFn = new Function(...daemonApiNames, `"use strict";\n${daemonFullCode}\n//# sourceURL=rr-daemon.js`);
         daemonFn(...daemonApiValues);
       } catch (e) {
         if (e instanceof CombatEndSignal) throw e;
@@ -1199,7 +1230,7 @@ function run(req: RunRequest): RunResult {
 
   try {
     // eslint-disable-next-line no-new-func
-    const fn = new Function(...apiNames, `"use strict";\n${execCode}`);
+    const fn = new Function(...apiNames, `"use strict";\n${execCode}\n//# sourceURL=rr-main.js`);
     fn(...apiValues);
     return {
       actions, finalState: state, consoleLogs,

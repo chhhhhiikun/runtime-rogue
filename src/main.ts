@@ -1,5 +1,6 @@
 import "./styles.css";
 
+import * as monaco from "monaco-editor";
 import { type MonacoEditor, createEditor, getCode, setCode, insertText, colorizeCode } from "./ui/editor";
 import { MAX_ENERGY, MAX_DAEMON_COST, type CombatState } from "./game/state";
 import { HAND_SIZE, CARDS, getCardBaseCost, type CardId } from "./game/cards";
@@ -1286,6 +1287,37 @@ function updateLogSpeedBtn(): void {
   if (btn) btn.textContent = `⏩ ${logSpeed}x`;
 }
 
+// ── 実行中の行ハイライト・カードハイライト ──────────────────────────
+// バトルログのアクション再生に合わせて、そのアクションを起こしたコード行とカードを光らせる演出。
+// 常時ONにはせず、好みでOFFにできるようトグルボタンを用意する
+function loadHighlightEnabled(): boolean {
+  return localStorage.getItem("runtime_rogue_highlight_enabled") !== "0"; // 未設定時はON
+}
+let highlightEnabled = loadHighlightEnabled();
+function toggleHighlight(): void {
+  highlightEnabled = !highlightEnabled;
+  localStorage.setItem("runtime_rogue_highlight_enabled", highlightEnabled ? "1" : "0");
+  updateHighlightBtn();
+}
+function updateHighlightBtn(): void {
+  const btn = document.getElementById("highlight-toggle-btn");
+  if (btn) {
+    btn.textContent = highlightEnabled ? "✨ 演出ON" : "✨ 演出OFF";
+    btn.classList.toggle("active", highlightEnabled);
+  }
+}
+
+// 指定行をハイライトし、新しいdecoration idを返す（呼び出し側は次回このidを渡してクリア/更新する）
+function highlightEditorLine(editor: MonacoEditor, prevIds: string[], line: number): string[] {
+  return editor.deltaDecorations(prevIds, [{
+    range: new monaco.Range(line, 1, line, 1),
+    options: { isWholeLine: true, className: "exec-line-highlight" },
+  }]);
+}
+function clearEditorHighlight(editor: MonacoEditor, prevIds: string[]): string[] {
+  return editor.deltaDecorations(prevIds, []);
+}
+
 // ── メインメニュー ──────────────────────────────────────────────────
 
 function showMenuScreen(): void {
@@ -1756,6 +1788,9 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
     }
   }
 
+  let mainLineDecorations: string[] = [];
+  let daemonLineDecorations: string[] = [];
+
   for (const action of result.actions) {
     if (action.kind === "enemyTurn") {
       // 敵ターンのアニメーション
@@ -1773,6 +1808,17 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
       continue;
     }
 
+    if (highlightEnabled) {
+      const targetEditor = action.viaDaemon ? daemonEditor : entry?.editor;
+      if (targetEditor && action.sourceLine !== undefined) {
+        if (action.viaDaemon) {
+          daemonLineDecorations = highlightEditorLine(targetEditor, daemonLineDecorations, action.sourceLine);
+        } else {
+          mainLineDecorations = highlightEditorLine(targetEditor, mainLineDecorations, action.sourceLine);
+        }
+      }
+    }
+
     const text = applyAction(state, action, action.viaDaemon ? "daemon" : "energy");
     const isHeal = action.kind === "heal" || action.kind === "block" ||
                    action.kind === "lrBlock" || action.kind === "reboot" ||
@@ -1781,11 +1827,16 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
                    action.kind === "bufferOverflowProtection" ||
                    action.kind === "overclockBurst";
     appendLog(action.viaDaemon ? `🤖 ${text}` : text, isHeal ? "heal" : "dmg");
-    render(state, deck, getDisabledCards());
+    render(state, deck, getDisabledCards(), highlightEnabled ? action.cardId : undefined);
     if (action.viaDaemon) updateDaemonDisplay();
     await scaledSleep(action.viaDaemon ? 60 : 180);
     if (state.enemy.hp <= 0) break;
   }
+
+  // ループ終了後、ハイライトを解除する（次の実行や別カードに引き継がない）
+  if (entry?.editor) mainLineDecorations = clearEditorHighlight(entry.editor, mainLineDecorations);
+  if (daemonEditor)  daemonLineDecorations = clearEditorHighlight(daemonEditor, daemonLineDecorations);
+  render(state, deck, getDisabledCards());
 
   // deploy() 等、actions配列を経由しないMain Clock変動を最終的に同期する
   if (result.finalEnergy !== undefined) state.energy = result.finalEnergy;
@@ -2175,6 +2226,8 @@ document.getElementById("add-lib-btn")!.addEventListener("click", () => {
 document.getElementById("editor-preset-btn")!.addEventListener("click", showPresetModal);
 updateLogSpeedBtn();
 document.getElementById("log-speed-btn")!.addEventListener("click", cycleLogSpeed);
+updateHighlightBtn();
+document.getElementById("highlight-toggle-btn")!.addEventListener("click", toggleHighlight);
 
 document.getElementById("end-turn-btn")!.addEventListener("click", onEndTurn);
 document.getElementById("restart-btn")!.addEventListener("click", () => {

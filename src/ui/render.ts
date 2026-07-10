@@ -87,7 +87,7 @@ function gimmickProgressText(g: StageGimmick, state: CombatState): { text: strin
   }
 }
 
-export function render(state: CombatState, deck: Deck, disabledCards?: Set<CardId>): void {
+export function render(state: CombatState, deck: Deck, disabledCards?: Set<CardId>, flashingCardId?: CardId): void {
   // 敵
   const eFill = $$("enemy-hp-fill") as HTMLElement | null;
   if (eFill) eFill.style.width = `${(state.enemy.hp / state.enemy.maxHp) * 100}%`;
@@ -141,7 +141,7 @@ export function render(state: CombatState, deck: Deck, disabledCards?: Set<CardI
   if (eTextEl) eTextEl.textContent = `${state.energy} / ${state.maxEnergy}`;
 
   // デッキ
-  renderHand(deck.hand, disabledCards, state.costZeroCardIds);
+  renderHand(deck.hand, disabledCards, state.costZeroCardIds, flashingCardId);
   const handCountEl    = $$("hand-count");
   if (handCountEl)    handCountEl.textContent    = String(deck.hand.length);
   const discardCountEl = $$("discard-count");
@@ -150,7 +150,7 @@ export function render(state: CombatState, deck: Deck, disabledCards?: Set<CardI
   if (drawCountEl)    drawCountEl.textContent    = String(deck.drawPile.length);
 }
 
-function renderHand(hand: CardId[], disabledCards?: Set<CardId>, costZeroCardIds?: string[]): void {
+function renderHand(hand: CardId[], disabledCards?: Set<CardId>, costZeroCardIds?: string[], flashingCardId?: CardId): void {
   const handEl = $$("hand");
   if (!handEl) return;
   const counts = new Map<CardId, number>();
@@ -163,8 +163,9 @@ function renderHand(hand: CardId[], disabledCards?: Set<CardId>, costZeroCardIds
     const disabled = disabledCards?.has(id) ?? false;
     const isCostZero = costZeroCardIds?.includes(id) ?? false;
     const card     = document.createElement("div");
-    card.className = "card" + (disabled ? " card-disabled" : "");
+    card.className = "card" + (disabled ? " card-disabled" : "") + (id === flashingCardId ? " card-flash" : "");
     card.dataset.rarity = def.rarity;
+    card.dataset.cardId = id;
     card.title     = disabled ? "このターンすでに使用済み" : "クリックでエディタに挿入";
     const attrTags = def.attributes.map(a =>
       `<span class="attr-tag attr-${a}">${a === "unique" ? "Unique" : "Disp"}</span>`

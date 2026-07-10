@@ -186,6 +186,7 @@ body {
 }
 #hud button:hover { border-color: var(--accent); color: var(--accent); }
 #hud button:disabled { opacity: 0.45; cursor: not-allowed; }
+#hud button.active { border-color: var(--accent); color: var(--accent); background: var(--panel-2); }
 
 #add-editor-btn { color: var(--accent); border-color: var(--accent); }
 #reset-view-btn { padding: 7px 10px; }
@@ -335,6 +336,15 @@ body {
 .card .cost { float: right; color: var(--energy); font-size: 0.75rem; }
 .card .desc { font-size: 0.68rem; color: var(--muted); margin-top: 3px; clear: both; }
 
+/* 実行中ハイライト: そのアクションを起こしたカードを一瞬光らせる */
+.card-flash {
+  animation: card-flash-pulse 0.4s ease-out 1;
+}
+@keyframes card-flash-pulse {
+  0%   { box-shadow: 0 0 0 2px var(--accent), 0 0 16px 2px var(--accent); border-color: var(--accent); }
+  100% { box-shadow: none; }
+}
+
 /* 使用済みカード（reboot など1ターン1回制限） */
 .card-disabled {
   opacity: 0.55;
@@ -387,6 +397,11 @@ body {
   height: 220px;   /* Monaco の初期高さ。リサイズで上書きされる */
   overflow: hidden;
   position: relative; /* Monaco が内部で absolute 子を持つため必要 */
+}
+
+/* 実行中ハイライト: 今実行中の行の背景（Monacoのdelta decorations経由で付与） */
+.exec-line-highlight {
+  background: rgba(106, 209, 255, 0.18);
 }
 
 .editor-error {
