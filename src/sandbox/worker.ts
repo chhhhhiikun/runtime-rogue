@@ -169,9 +169,12 @@ function run(req: RunRequest): RunResult {
   let lastCheckedCardId: CardId | null = null;
 
   // "use strict";\n + (prefixCode + "\n\n")? を差し引き、ユーザーが書いたコード自身の行番号に変換する。
+  // さらに new Function(...) がソース本体の前に自動で挿入する合成ラッパー
+  // "function anonymous(引数...\n) {\n" 分の2行も差し引く必要がある（V8の実装依存の挙動。
+  // 引数の個数に関わらず常に2行固定であることを実験で確認済み）
   // prefixCode（ライブラリ）領域や解決失敗時はundefinedを返す（ライブラリ行はハイライト対象外）
   const computeSourceLine = (rawLine: number): number | undefined => {
-    const offset = req.prefixCode ? req.prefixCode.split("\n").length + 2 : 1;
+    const offset = req.prefixCode ? req.prefixCode.split("\n").length + 4 : 3;
     const userLine = rawLine - offset;
     return userLine > 0 ? userLine : undefined;
   };
