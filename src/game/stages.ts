@@ -35,6 +35,10 @@ export interface StageDef {
   isBoss?: boolean;
   gimmick?: StageGimmick;
   storedValueGimmick?: StoredValueGimmick;
+  // 基準報酬（実際の獲得量はここに±ジッターを乗せた値。main.tsのjitterReward参照）。
+  // チュートリアル用ステージ（tutorial.ts）は通貨を獲得しないため未指定でよい
+  byteReward?: number;
+  cashReward?: number;
 }
 
 // 基準: attack() コスト1・ダメージ6、エネルギー10 → 最大60ダメージ/ターン
@@ -44,6 +48,8 @@ export const STAGES: StageDef[] = [
     // 約2ターン（純attack ループ想定）
     name: "スライム",
     hp: 80,
+    byteReward: 700,
+    cashReward: 2000,
     intentPattern: [
       { kind: "attack", value: 6 },
       { kind: "attack", value: 6 },
@@ -54,6 +60,8 @@ export const STAGES: StageDef[] = [
     // 約2〜3ターン。ブロックあり
     name: "ゴブリン",
     hp: 140,
+    byteReward: 770,
+    cashReward: 2100,
     intentPattern: [
       { kind: "attack", value: 8  },
       { kind: "attack", value: 8  },
@@ -65,6 +73,8 @@ export const STAGES: StageDef[] = [
     // 約3ターン。高火力ターンあり
     name: "スケルトン",
     hp: 200,
+    byteReward: 840,
+    cashReward: 2200,
     intentPattern: [
       { kind: "attack", value: 10 },
       { kind: "block",  value: 9  },
@@ -76,6 +86,8 @@ export const STAGES: StageDef[] = [
     // 約4ターン。重ブロック
     name: "オーク",
     hp: 280,
+    byteReward: 910,
+    cashReward: 2300,
     intentPattern: [
       { kind: "block",  value: 14 },
       { kind: "attack", value: 13 },
@@ -87,6 +99,8 @@ export const STAGES: StageDef[] = [
     // 約5ターン。連続高火力。過負荷反撃ギミック持ち
     name: "ウェアウルフ",
     hp: 360,
+    byteReward: 980,
+    cashReward: 2400,
     intentPattern: [
       { kind: "attack", value: 12 },
       { kind: "attack", value: 15 },
@@ -103,6 +117,8 @@ export const STAGES: StageDef[] = [
     // 約6〜7ターン。超高火力
     name: "サイクロプス",
     hp: 450,
+    byteReward: 1050,
+    cashReward: 2500,
     intentPattern: [
       { kind: "attack", value: 16 },
       { kind: "block",  value: 12 },
@@ -119,6 +135,8 @@ export const STAGES: StageDef[] = [
     // 約8ターン。重ブロック主体
     name: "ゴーレム",
     hp: 540,
+    byteReward: 1120,
+    cashReward: 2600,
     intentPattern: [
       { kind: "block",  value: 16 },
       { kind: "attack", value: 15 },
@@ -133,6 +151,8 @@ export const STAGES: StageDef[] = [
     // 約9〜10ターン
     name: "魔道士",
     hp: 620,
+    byteReward: 1190,
+    cashReward: 2700,
     intentPattern: [
       { kind: "attack", value: 12 },
       { kind: "attack", value: 17 },
@@ -149,6 +169,8 @@ export const STAGES: StageDef[] = [
     // 約11ターン。猛攻
     name: "デーモン",
     hp: 720,
+    byteReward: 1260,
+    cashReward: 2800,
     intentPattern: [
       { kind: "attack", value: 14 },
       { kind: "attack", value: 19 },
@@ -165,6 +187,8 @@ export const STAGES: StageDef[] = [
     // 約13ターン。攻防バランス型
     name: "竜騎士",
     hp: 820,
+    byteReward: 1330,
+    cashReward: 2900,
     intentPattern: [
       { kind: "block",  value: 18 },
       { kind: "attack", value: 18 },
@@ -182,6 +206,8 @@ export const STAGES: StageDef[] = [
     // ボス。約15〜20ターン想定
     name: "ドラゴン",
     hp: 1000,
+    byteReward: 1400,
+    cashReward: 3000,
     intentPattern: [
       { kind: "attack", value: 14 },
       { kind: "block",  value: 24 },

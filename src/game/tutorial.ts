@@ -10,7 +10,6 @@ export interface TutorialStep {
   followUp?: {             // このステージ中にエラーが起きたら、少し待ってから表示し直す内容
     tip: string;
   };
-  unlockFunctionKw?: boolean; // このステップ開始時に function キーワードを解禁する
   daemonEnabled?: boolean; // このステップ開始時にDAEMONウィジェットを表示し、コード・実行を有効化する
 }
 
@@ -118,7 +117,6 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     },
     deck: ["tutorialAttack", "tutorialBlock"],
     allowedFns: ["attack", "block", "mainClock"],
-    unlockFunctionKw: true,
     tip:
       "ここまでは、用意された道具を組み合わせるだけでした。ここから先は少し違います。\n\n" +
       "あんなのあったら良いな…と、考えてみましょう。\n\n" +

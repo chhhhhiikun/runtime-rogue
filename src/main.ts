@@ -1,12 +1,13 @@
 import "./styles.css";
 
 import * as monaco from "monaco-editor";
-import { type MonacoEditor, createEditor, getCode, setCode, insertText, colorizeCode } from "./ui/editor";
+import { type MonacoEditor, createEditor, getCode, setCode, insertText, colorizeCode, READ_ITEMS, UNLOCKABLE_ITEMS } from "./ui/editor";
 import { MAX_ENERGY, MAX_DAEMON_COST, type CombatState } from "./game/state";
 import { HAND_SIZE, CARDS, getCardBaseCost, type CardId } from "./game/cards";
 import { CHARACTERS, getCharacter, getAllCharacterCards, type CharacterDef } from "./game/characters";
 import { STAGES, type StageDef, type StageGimmick, type StoredValueGimmick } from "./game/stages";
 import { TUTORIAL_STEPS, TUTORIAL_COMPLETE_OVERLAY, TUTORIAL_COMPLETE_LOG } from "./game/tutorial";
+import { LESSONS, type LessonDef } from "./game/lessons";
 import { Deck } from "./game/deck";
 import { applyAction } from "./game/actions";
 import { runUserCode, DEFAULT_UNLOCKS, type UnlockFunctions, type DeckSnapshot } from "./sandbox/runCode";
@@ -833,22 +834,27 @@ function buildConsoleWidget(): void {
 
     // エディタと同じアンロック制限を適用
     const readFns: Record<string, () => unknown> = {
-      enemyHp:     () => state.enemy.hp,
-      myHp:        () => state.player.hp,
-      myBlock:     () => state.player.block,
-      mainClock:   () => state.energy,
-      daemonCost:  () => state.daemonCost,
-      enemyBlock:  () => state.enemy.block,
-      enemyIntent: () => ({ ...state.enemy.intent }),
-      comboCount:  () => state.comboCount,
+      mainClock:         () => state.energy,
+      daemonCost:        () => state.daemonCost,
+      comboCount:        () => state.comboCount,
+      sameActionStreak:  () => state.sameActionStreak,
+      storedValue:       () => state.storedValue,
+      turnsSinceRelease: () => state.turnsSinceRelease,
     };
-    if (devUnlocks.deckInfo) {
-      const toFn = (ids: CardId[]) => ids.map(id => CARDS[id]?.fn ?? id);
-      readFns["myHand"]     = () => toFn([...deck.hand]);
-      readFns["myDeck"]     = () => toFn([...deckCards]);
-      readFns["myDrawPile"] = () => toFn([...deck.drawPile]);
-      readFns["myDiscard"]  = () => toFn([...deck.discardPile]);
-    }
+    if (devUnlocks.enemyHp)             readFns["enemyHp"]             = () => state.enemy.hp;
+    if (devUnlocks.myHp)                readFns["myHp"]                = () => state.player.hp;
+    if (devUnlocks.myBlock)             readFns["myBlock"]             = () => state.player.block;
+    if (devUnlocks.enemyBlock)          readFns["enemyBlock"]          = () => state.enemy.block;
+    if (devUnlocks.enemyIntent)         readFns["enemyIntent"]         = () => ({ ...state.enemy.intent });
+    if (devUnlocks.damageDealtThisTurn) readFns["damageDealtThisTurn"] = () => state.damageDealtThisTurn;
+    if (devUnlocks.comboIncrement)      readFns["comboIncrement"]      = () => state.comboIncrement;
+    if (devUnlocks.turn)                readFns["turn"]                = () => state.turn;
+    const toFn = (ids: CardId[]) => ids.map(id => CARDS[id]?.fn ?? id);
+    if (devUnlocks.myHand)     readFns["myHand"]     = () => toFn([...deck.hand]);
+    if (devUnlocks.myDeck)     readFns["myDeck"]     = () => toFn([...deckCards]);
+    if (devUnlocks.myDrawPile) readFns["myDrawPile"] = () => toFn([...deck.drawPile]);
+    if (devUnlocks.myDiscard)  readFns["myDiscard"]  = () => toFn([...deck.discardPile]);
+    if (devUnlocks.myDeployed) readFns["myDeployed"] = () => toFn([...deck.deployedCards]);
     const names  = Object.keys(readFns);
     const values = Object.values(readFns);
     try {
@@ -1020,6 +1026,109 @@ function recordGameOver(characterId: string): void {
   const cur = getCharStats(stats, characterId);
   stats[characterId] = { ...cur, gameOvers: cur.gameOvers + 1 };
   saveStats(stats);
+}
+
+// ── バイト（永続メタ進行通貨）・キャッシュ（ラン単位通貨） ────────────
+// バイトはステージクリアのたび即座にlocalStorageへ加算される（ランがゲームオーバーで終わっても失われない）。
+// キャッシュはラン中のみメモリ上で保持し、ラン終了（勝利・敗北）でリセットされる。
+
+function loadTotalBytes(): number {
+  try {
+    const raw = localStorage.getItem("runtime_rogue_bytes");
+    return raw ? Number(raw) || 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function addBytes(amount: number): number {
+  const total = loadTotalBytes() + amount;
+  try {
+    localStorage.setItem("runtime_rogue_bytes", String(total));
+  } catch {
+    // ignore storage errors
+  }
+  return total;
+}
+
+// baseに±rangeの一様乱数ジッターを乗せた整数を返す
+function jitterReward(base: number, range: number): number {
+  return base + Math.floor(Math.random() * (range * 2 + 1)) - range;
+}
+
+const BYTE_JITTER = 20;
+const CASH_JITTER = 150;
+const BOSS_CLEAR_BONUS = 1500;
+
+// bytesが足りていれば消費して永続化し true を返す。足りなければ何もせず false
+function trySpendBytes(amount: number): boolean {
+  const total = loadTotalBytes();
+  if (total < amount) return false;
+  try {
+    localStorage.setItem("runtime_rogue_bytes", String(total - amount));
+  } catch {
+    // ignore storage errors
+  }
+  return true;
+}
+
+// ── レッスン（購入済みIDの永続化） ────────────────────────────────────
+
+function loadPurchasedLessons(): string[] {
+  try {
+    const raw = localStorage.getItem("runtime_rogue_lessons");
+    return raw ? (JSON.parse(raw) as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function isLessonPurchased(id: string): boolean {
+  return loadPurchasedLessons().includes(id);
+}
+
+function purchaseLesson(id: string): void {
+  const owned = loadPurchasedLessons();
+  if (owned.includes(id)) return;
+  owned.push(id);
+  try {
+    localStorage.setItem("runtime_rogue_lessons", JSON.stringify(owned));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+// ── アンロック関数（購入済みIDの永続化） ──────────────────────────────
+// 現時点では購入してもゲーム内の挙動（devUnlocks）は変えない。
+// DEFAULT_UNLOCKSが全てtrueのまま実際のゲート化は別途行うため、ここは購入記録のみ
+
+function loadPurchasedUnlocks(): Array<keyof UnlockFunctions> {
+  try {
+    const raw = localStorage.getItem("runtime_rogue_purchased_unlocks");
+    return raw ? (JSON.parse(raw) as Array<keyof UnlockFunctions>) : [];
+  } catch {
+    return [];
+  }
+}
+
+function isUnlockPurchased(key: keyof UnlockFunctions): boolean {
+  return loadPurchasedUnlocks().includes(key);
+}
+
+function purchaseUnlock(key: keyof UnlockFunctions): void {
+  const owned = loadPurchasedUnlocks();
+  if (owned.includes(key)) return;
+  owned.push(key);
+  try {
+    localStorage.setItem("runtime_rogue_purchased_unlocks", JSON.stringify(owned));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function updateCashLabel(): void {
+  const el = document.getElementById("cash-label");
+  if (el) el.textContent = `💰 ${runCash}`;
 }
 
 function formatClearTime(ms: number): string {
@@ -1196,12 +1305,13 @@ function restoreButtons(): void {
 // ── アンロック状態 ──────────────────────────────────────────────────
 
 // チュートリアルはレール式に段階的アンロックしていく設計のため、DEFAULT_UNLOCKS（通常プレイ用）
-// とは別に、常に全ロック状態から開始させる
+// とは別に、原則ロック状態から開始させる。ただしendTurn()はStep5で使うため最初から使える扱いにする
+// （functionキーワードと同じく、技術的なロックではなくStep5での物語上の紹介として扱う）
 const TUTORIAL_INITIAL_UNLOCKS: UnlockFunctions = {
-  deckInfo:   false,
-  endTurn:    false,
-  functionKw: false,
-  arrowFn:    false,
+  enemyHp: false, myHp: false, myBlock: false, enemyBlock: false,
+  damageDealtThisTurn: false, comboIncrement: false, turn: false,
+  endTurn: true, enemyIntent: false, isUsable: false,
+  myDeck: false, myHand: false, myDrawPile: false, myDiscard: false, myDeployed: false,
 };
 
 let devUnlocks: UnlockFunctions = { ...DEFAULT_UNLOCKS };
@@ -1241,6 +1351,8 @@ function getRunCharacterCards(): CardId[] {
 let selectedCharacter: CharacterDef = CHARACTERS[0];
 let PLAYER_MAX_HP = selectedCharacter.hp;
 let runStartTime = 0; // プレイ履歴用: 現在の周回(startGame)を開始したUnix時刻（tutorial中は未使用）
+let runCash       = 0; // ラン単位（揮発性）通貨。ラン終了でリセット
+let runByteEarned = 0; // このランで獲得したバイトの合計（run終了画面での表示用。tutorial中は未使用）
 
 let deckCards: CardId[]   = [];
 let runPlayerHp           = PLAYER_MAX_HP;
@@ -1320,21 +1432,46 @@ function clearEditorHighlight(editor: MonacoEditor, prevIds: string[]): string[]
 
 // ── メインメニュー ──────────────────────────────────────────────────
 
-function showMenuScreen(): void {
+// メインメニュー由来の画面（menu/char-select/shop/lesson/canvas-root）はどれか1つだけを表示する
+function hideAllTopScreens(): void {
   canvasRoot.classList.add("hidden");
+  document.getElementById("menu-screen")!.classList.add("hidden");
   document.getElementById("char-select-screen")!.classList.add("hidden");
+  document.getElementById("shop-screen")!.classList.add("hidden");
+  document.getElementById("lesson-screen")!.classList.add("hidden");
+}
+
+function showMenuScreen(): void {
+  hideAllTopScreens();
   document.getElementById("menu-screen")!.classList.remove("hidden");
 }
 
 function showCharSelectScreen(): void {
-  canvasRoot.classList.add("hidden");
-  document.getElementById("menu-screen")!.classList.add("hidden");
+  hideAllTopScreens();
   document.getElementById("char-select-screen")!.classList.remove("hidden");
 }
 
+function updateShopByteLabel(): void {
+  const el = document.getElementById("shop-byte-label");
+  if (el) el.textContent = `💾 ${loadTotalBytes()}`;
+}
+
+function showShopScreen(): void {
+  hideAllTopScreens();
+  renderShopLessonList();
+  renderShopUnlockList();
+  updateShopByteLabel();
+  document.getElementById("shop-screen")!.classList.remove("hidden");
+}
+
+function showLessonScreen(): void {
+  hideAllTopScreens();
+  renderLessonListInto("lesson-screen-body");
+  document.getElementById("lesson-screen")!.classList.remove("hidden");
+}
+
 function showGameScreen(): void {
-  document.getElementById("menu-screen")!.classList.add("hidden");
-  document.getElementById("char-select-screen")!.classList.add("hidden");
+  hideAllTopScreens();
   canvasRoot.classList.remove("hidden");
   // 表示直後は canvasRoot がまだ非表示だった間の offsetHeight(=0) を引きずっているため、
   // 見えるようになった直後に実サイズへ再同期する
@@ -1350,8 +1487,14 @@ function buildMenuScreen(): void {
     <div class="menu-title">RuntimeRogue</div>
     <div class="menu-subtitle">JavaScriptを書いて敵を倒せ</div>
     <button class="menu-btn" id="menu-play-btn">プレイ →</button>
+    <button class="char-stats-btn" id="menu-stats-btn">📊 プレイ履歴</button>
+    <button class="char-stats-btn" id="menu-shop-btn">🛒 ショップ</button>
+    <button class="char-stats-btn" id="menu-lesson-list-btn">📚 レッスン一覧</button>
   `;
   document.getElementById("menu-play-btn")!.addEventListener("click", showCharSelectScreen);
+  document.getElementById("menu-stats-btn")!.addEventListener("click", showStatsModal);
+  document.getElementById("menu-shop-btn")!.addEventListener("click", showShopScreen);
+  document.getElementById("menu-lesson-list-btn")!.addEventListener("click", showLessonScreen);
 }
 
 function buildCharSelectScreen(): void {
@@ -1362,7 +1505,6 @@ function buildCharSelectScreen(): void {
     <button class="char-tutorial-btn" id="char-preset-btn">🧩 エディタプリセット</button>
     <div class="char-grid" id="char-grid"></div>
     <button class="char-back-btn" id="char-back-btn">← 戻る</button>
-    <button class="char-stats-btn" id="char-stats-btn">📊 プレイ履歴</button>
   `;
 
   document.getElementById("char-tutorial-btn")!.addEventListener("click", () => {
@@ -1371,7 +1513,6 @@ function buildCharSelectScreen(): void {
   });
 
   document.getElementById("char-preset-btn")!.addEventListener("click", showPresetModal);
-  document.getElementById("char-stats-btn")!.addEventListener("click", showStatsModal);
 
   const grid = document.getElementById("char-grid")!;
   for (const char of CHARACTERS) {
@@ -1409,6 +1550,9 @@ function startGame(characterId: string): void {
   runPlayerHp       = PLAYER_MAX_HP;
   currentStageIndex = 0;
   runStartTime      = Date.now();
+  runCash           = 0;
+  runByteEarned     = 0;
+  updateCashLabel();
   hideOverlay();
   closeRewardModal();
   clearLog();
@@ -1441,7 +1585,7 @@ function setTutorialUIVisible(visible: boolean): void {
 }
 
 // ごく簡易なMarkdown→HTML変換。```lang フェンスはMonacoのcolorizeでシンタックスハイライトする。
-async function renderTutorialMarkdown(md: string): Promise<string> {
+async function renderMarkdown(md: string): Promise<string> {
   const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
   const parts: Array<{ type: "text" | "code"; content: string; lang?: string }> = [];
   let lastIndex = 0;
@@ -1505,7 +1649,7 @@ async function updateTutorialWidget(): Promise<void> {
   const header =
     `<div class="tutorial-widget-title">${tutorialStepIndex + 1} / ${TUTORIAL_STEPS.length}: ${step.stage.name}</div>` +
     `<h3 class="tutorial-heading">${escapeHtml(step.title)}</h3>`;
-  bodyEl.innerHTML = header + await renderTutorialMarkdown(step.tip);
+  bodyEl.innerHTML = header + await renderMarkdown(step.tip);
 }
 
 // followUp（ヒント）専用の常駐ウィジェット。元のtipを表示する📘 TUTORIALとは別に、
@@ -1528,7 +1672,7 @@ async function showTutorialHintWidget(tip: string): Promise<void> {
     if (body) body.style.height = `${Math.max(60, h - 56)}px`;
   });
   tutorialHintWidgetEl = widget;
-  document.getElementById("tutorial-hint-widget-body")!.innerHTML = await renderTutorialMarkdown(tip);
+  document.getElementById("tutorial-hint-widget-body")!.innerHTML = await renderMarkdown(tip);
 }
 
 async function showTutorialTipModal(): Promise<void> {
@@ -1539,7 +1683,7 @@ async function showTutorialTipModal(): Promise<void> {
     `📘 チュートリアル ${tutorialStepIndex + 1} / ${TUTORIAL_STEPS.length}: ${step.stage.name}`;
   const modalBody = document.getElementById("tutorial-modal-body")!;
   modalBody.innerHTML =
-    `<h3 class="tutorial-heading">${escapeHtml(step.title)}</h3>` + await renderTutorialMarkdown(step.tip);
+    `<h3 class="tutorial-heading">${escapeHtml(step.title)}</h3>` + await renderMarkdown(step.tip);
   document.getElementById("tutorial-modal")!.classList.remove("hidden");
   updateTutorialWidget();
 
@@ -1547,7 +1691,6 @@ async function showTutorialTipModal(): Promise<void> {
   startBtn.textContent = "はじめる →";
   startBtn.onclick = () => {
     document.getElementById("tutorial-modal")!.classList.add("hidden");
-    if (step.unlockFunctionKw) devUnlocks = { ...devUnlocks, functionKw: true };
     if (step.daemonEnabled) {
       const daemonWidget = document.getElementById("w-daemon");
       if (daemonWidget) daemonWidget.style.display = "";
@@ -1564,7 +1707,7 @@ async function showTutorialTipModal(): Promise<void> {
 async function showTutorialFollowUp(tip: string): Promise<void> {
   await sleep(1200);
   document.getElementById("tutorial-modal-title")!.textContent = "📘 ヒント";
-  document.getElementById("tutorial-modal-body")!.innerHTML = await renderTutorialMarkdown(tip);
+  document.getElementById("tutorial-modal-body")!.innerHTML = await renderMarkdown(tip);
   document.getElementById("tutorial-modal")!.classList.remove("hidden");
   showTutorialHintWidget(tip);
 
@@ -1729,7 +1872,7 @@ async function startBattleInner(): Promise<void> {
     .map(e => getCode(e.editor))
     .filter(c => c.trim())
     .join("\n\n") || undefined;
-  const snap = devUnlocks.deckInfo ? getDeckSnapshot() : undefined;
+  const snap = getDeckSnapshot();
   // チュートリアル中はDaemonをまだ教えていないステップでは、コードも実行も無効化する
   const daemonCodeForRun = tutorialDaemonLocked() ? undefined : getCode(daemonEditor);
   const result = await runUserCode(
@@ -1929,7 +2072,7 @@ async function onRun(entry: EditorEntry): Promise<void> {
     .filter(c => c.trim())
     .join("\n\n") || undefined;
 
-  const snap         = devUnlocks.deckInfo ? getDeckSnapshot() : undefined;
+  const snap         = getDeckSnapshot();
   const characterCards = getRunCharacterCards();
   const stage        = activeStages[currentStageIndex];
 
@@ -1961,7 +2104,7 @@ async function onEndTurn(): Promise<void> {
     .map(e => getCode(e.editor))
     .filter(c => c.trim())
     .join("\n\n") || undefined;
-  const snap = devUnlocks.deckInfo ? getDeckSnapshot() : undefined;
+  const snap = getDeckSnapshot();
   // チュートリアル中はDaemonをまだ教えていないステップでは、コードも実行も無効化する
   const daemonCodeForRun = tutorialDaemonLocked() ? undefined : getCode(daemonEditor);
 
@@ -1994,6 +2137,10 @@ async function finish(win: boolean): Promise<void> {
       return;
     }
     appendLog("💀 敗北...", "sys");
+    if (!tutorialMode) {
+      const totalBytes = loadTotalBytes();
+      appendLog(`💾 バイト +${runByteEarned}（累計 ${totalBytes}）`, "sys");
+    }
     showOverlay("💀 GAME OVER");
     recordGameOver(selectedCharacter.id);
     return;
@@ -2009,6 +2156,18 @@ async function finish(win: boolean): Promise<void> {
   // Restore disposed cards on stage clear
   deck.restoreDisposedCards();
 
+  let cashEarned = 0;
+  if (!tutorialMode) {
+    const clearedStage = activeStages[currentStageIndex];
+    cashEarned = jitterReward(clearedStage.cashReward!, CASH_JITTER);
+    const byteEarned = jitterReward(clearedStage.byteReward!, BYTE_JITTER);
+    runCash += cashEarned;
+    runByteEarned += byteEarned;
+    addBytes(byteEarned);
+    updateCashLabel();
+    appendLog(`💰 キャッシュ +${cashEarned}`, "sys");
+  }
+
   if (currentStageIndex >= totalStages() - 1) {
     if (tutorialMode) {
       appendLog(TUTORIAL_COMPLETE_LOG, "sys");
@@ -2018,6 +2177,11 @@ async function finish(win: boolean): Promise<void> {
       endTutorialAndReturn();
       return;
     }
+    // 全クリアの達成感を出すため、ステージごとの直線報酬とは別枠でボスボーナスを一律加算する（ジッターなし）
+    runByteEarned += BOSS_CLEAR_BONUS;
+    addBytes(BOSS_CLEAR_BONUS);
+    const totalBytes = loadTotalBytes();
+    appendLog(`💾 バイト +${runByteEarned}（うちボス撃破ボーナス +${BOSS_CLEAR_BONUS}）（累計 ${totalBytes}）`, "sys");
     appendLog("🏆 全ステージクリア！", "sys");
     showOverlay("🏆 CLEAR!");
     recordClear(selectedCharacter.id, Date.now() - runStartTime);
@@ -2026,8 +2190,11 @@ async function finish(win: boolean): Promise<void> {
 
   currentStageIndex++;
 
+  const victoryLines = [`✅ ${clearedStageName} を倒した！`, `💊 HP +${healed} 回復 → ${runPlayerHp}`];
+  if (!tutorialMode) victoryLines.push(`💰 キャッシュ +${cashEarned}`);
+
   showVictoryModal(
-    [`✅ ${clearedStageName} を倒した！`, `💊 HP +${healed} 回復 → ${runPlayerHp}`],
+    victoryLines,
     () => {
       if (tutorialMode) {
         // チュートリアルはランダム報酬なし。各ステージで必要なカードだけを次のtipで指定する。
@@ -2051,6 +2218,337 @@ async function finish(win: boolean): Promise<void> {
 
 // ── 関数リファレンスモーダル ────────────────────────────────────────
 
+// キャラカード・スターターカードは表示しない（後々別途実装予定）。
+// 常時ON関数・アンロック関数のみを対象に、アンロック済みを上、未アンロックを下（グレーアウト・クリック不可）に表示する。
+// devUnlocksの変化を反映するため、モーダルを開くたびに再描画する。
+function renderRefList(): void {
+  const body = document.getElementById("ref-body")!;
+  body.innerHTML = "";
+
+  const stripSnippet = (s: string) => s.replace(/\$\{1:([^}]*)\}/, "$1");
+
+  type RefRow = { sig: string; desc: string; locked: boolean; lesson?: LessonDef };
+  const rows: RefRow[] = [
+    ...READ_ITEMS.map(item => ({ sig: stripSnippet(item.insert), desc: item.doc, locked: false })),
+    ...UNLOCKABLE_ITEMS.map(item => ({
+      sig: stripSnippet(item.insert),
+      desc: item.doc,
+      locked: !devUnlocks[item.key],
+      lesson: LESSONS.find(l => l.requiresFn === item.key && isLessonPurchased(l.id)),
+    })),
+  ];
+  rows.sort((a, b) => Number(a.locked) - Number(b.locked)); // アンロック済み(false)が先、未アンロック(true)が後（安定ソート）
+
+  for (const row of rows) {
+    const rowEl = document.createElement("div");
+    rowEl.className = "ref-row" + (row.locked ? " ref-row-locked" : "");
+    rowEl.innerHTML = `
+      <div class="ref-row-top">
+        <code class="ref-sig">${row.sig}</code>
+        ${row.locked ? '<span class="ref-locked-badge">🔒 未アンロック</span>' : ""}
+        ${row.lesson ? '<button class="ref-lesson-btn">📖 レッスンを見る</button>' : ""}
+      </div>
+      <div class="ref-desc">${row.desc}</div>
+    `;
+    if (row.lesson) {
+      const lesson = row.lesson;
+      rowEl.querySelector(".ref-lesson-btn")!.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showLessonContent(lesson);
+      });
+    }
+    if (!row.locked) {
+      rowEl.addEventListener("click", () => {
+        const target = lastFocused ?? entries[0]?.editor;
+        if (target) insertText(target, `${row.sig};\n`);
+        document.getElementById("ref-modal")!.classList.add("hidden");
+      });
+    }
+    body.appendChild(rowEl);
+  }
+}
+
+// ── レッスン内容モーダル ──────────────────────────────────────────
+
+function buildLessonContentModal(): void {
+  const modal = document.createElement("div");
+  modal.id = "lesson-content-modal";
+  modal.className = "pile-modal hidden";
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "pile-backdrop";
+  backdrop.addEventListener("click", closeLessonContentModal);
+
+  const popup = document.createElement("div");
+  popup.className = "pile-popup lesson-popup";
+  popup.innerHTML = `
+    <div class="pile-popup-header">
+      <span class="pile-popup-title" id="lesson-content-title">📚 レッスン</span>
+      <button class="pile-popup-close" id="lesson-content-close">✕</button>
+    </div>
+    <div id="lesson-content-body" class="lesson-content-body tutorial-modal-body"></div>
+  `;
+
+  modal.append(backdrop, popup);
+  document.body.appendChild(modal);
+
+  document.getElementById("lesson-content-close")!.addEventListener("click", closeLessonContentModal);
+}
+
+async function showLessonContent(lesson: LessonDef): Promise<void> {
+  // 戦闘中（キャンバス表示中）は、モーダルではなくキャンバス上のレッスンウィンドウとして開く。
+  // メインメニュー側（ショップ・レッスン一覧画面）では従来通り内容モーダルを表示する
+  if (!canvasRoot.classList.contains("hidden")) {
+    closeLessonListModal();
+    document.getElementById("ref-modal")?.classList.add("hidden");
+    await openLessonWindow(lesson);
+    return;
+  }
+  document.getElementById("lesson-content-title")!.textContent = `📚 ${lesson.title}`;
+  document.getElementById("lesson-content-body")!.innerHTML = await renderMarkdown(lesson.body);
+  document.getElementById("lesson-content-modal")!.classList.remove("hidden");
+}
+
+function closeLessonContentModal(): void {
+  document.getElementById("lesson-content-modal")?.classList.add("hidden");
+}
+
+// ── レッスンウィンドウ（戦闘中のキャンバス上に表示） ──────────────────
+// エディタ等と同じキャンバス上のウィジェットとして開く。閉じるまで戦闘をまたいでも残るが、
+// エディタと違いlocalStorageには保存しない（リロードで消える。数クリックで開き直せるため）
+
+const lessonWindows = new Map<string, HTMLElement>(); // lesson.id → widget要素
+
+// ズームを100%に戻し、指定ウィジェットが画面中央に来るようにパンする
+// （キャンバスのtransformは translate(cvX,cvY) scale(cvScale) なので、screen = cv + pos * scale）
+function centerCanvasOnWidget(widget: HTMLElement): void {
+  cvScale = 1;
+  const wx = parseFloat(widget.style.left) || 0;
+  const wy = parseFloat(widget.style.top)  || 0;
+  cvX = (window.innerWidth  - widget.offsetWidth)  / 2 - wx;
+  cvY = (window.innerHeight - widget.offsetHeight) / 2 - wy;
+  updateCanvas();
+}
+
+async function openLessonWindow(lesson: LessonDef): Promise<void> {
+  const existing = lessonWindows.get(lesson.id);
+  if (existing) {
+    bringToFront(existing);
+    centerCanvasOnWidget(existing);
+    return;
+  }
+
+  // 現在のビュー中央付近（キャンバス座標）に配置。連続で開いたとき完全に重ならないよう少しずらす
+  const width   = 420;
+  const cascade = lessonWindows.size * 28;
+  const wx = (window.innerWidth  / 2 - cvX) / cvScale - width / 2 + cascade;
+  const wy = (window.innerHeight / 2 - cvY) / cvScale - 200 + cascade;
+
+  const { widget } = createWidget(`lesson-${lesson.id}`, `📚 ${lesson.title}`, wx, wy, width, `
+    <div class="lesson-window-body tutorial-widget-body"></div>
+  `);
+  lessonWindows.set(lesson.id, widget);
+
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "widget-btn danger";
+  closeBtn.textContent = "✕";
+  widget.querySelector(".widget-header-actions")!.appendChild(closeBtn);
+  closeBtn.addEventListener("click", () => {
+    widget.remove();
+    lessonWindows.delete(lesson.id);
+  });
+
+  setupResize(widget, (_w, h) => {
+    const body = widget.querySelector<HTMLElement>(".lesson-window-body");
+    if (body) body.style.height = `${Math.max(60, h - 56)}px`;
+  });
+
+  widget.querySelector<HTMLElement>(".lesson-window-body")!.innerHTML = await renderMarkdown(lesson.body);
+
+  bringToFront(widget);
+  centerCanvasOnWidget(widget);
+}
+
+// ── レッスン一覧（購入済みのみを表示する閲覧専用） ────────────────────
+// メインメニュー起点は専用画面（#lesson-screen）、戦闘中HUD起点は引き続きモーダル（#lesson-list-modal）。
+// どちらも同じ一覧描画ロジック（renderLessonListInto）を共有する
+
+function buildLessonListModal(): void {
+  const modal = document.createElement("div");
+  modal.id = "lesson-list-modal";
+  modal.className = "pile-modal hidden";
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "pile-backdrop";
+  backdrop.addEventListener("click", closeLessonListModal);
+
+  const popup = document.createElement("div");
+  popup.className = "pile-popup lesson-list-popup";
+  popup.innerHTML = `
+    <div class="pile-popup-header">
+      <span class="pile-popup-title">📚 レッスン一覧</span>
+      <button class="pile-popup-close" id="lesson-list-close">✕</button>
+    </div>
+    <div id="lesson-list-body" class="shop-lesson-list"></div>
+  `;
+
+  modal.append(backdrop, popup);
+  document.body.appendChild(modal);
+
+  document.getElementById("lesson-list-close")!.addEventListener("click", closeLessonListModal);
+}
+
+function buildLessonScreen(): void {
+  const el = document.getElementById("lesson-screen")!;
+  el.innerHTML = `
+    <div class="char-select-title">📚 レッスン一覧</div>
+    <div id="lesson-screen-body" class="shop-lesson-list"></div>
+    <button class="char-back-btn" id="lesson-screen-back-btn">← 戻る</button>
+  `;
+  document.getElementById("lesson-screen-back-btn")!.addEventListener("click", showMenuScreen);
+}
+
+function renderLessonListInto(containerId: string): void {
+  const listEl = document.getElementById(containerId)!;
+  listEl.innerHTML = "";
+
+  const owned = LESSONS.filter(l => isLessonPurchased(l.id));
+  if (owned.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "pile-popup-empty";
+    empty.textContent = "まだ購入したレッスンはありません（🛒 ショップから購入できます）";
+    listEl.appendChild(empty);
+    return;
+  }
+
+  for (const lesson of owned) {
+    const row = document.createElement("div");
+    row.className = "shop-lesson-row";
+    row.innerHTML = `
+      <div class="shop-lesson-info">
+        <span class="shop-lesson-title">${lesson.title}</span>
+      </div>
+      <div class="shop-lesson-actions"><button class="widget-btn shop-view-btn">📖 見る</button></div>
+    `;
+    row.querySelector(".shop-view-btn")!.addEventListener("click", () => showLessonContent(lesson));
+    listEl.appendChild(row);
+  }
+}
+
+function renderLessonList(): void {
+  renderLessonListInto("lesson-list-body");
+}
+
+function showLessonListModal(): void {
+  renderLessonList();
+  document.getElementById("lesson-list-modal")!.classList.remove("hidden");
+}
+
+function closeLessonListModal(): void {
+  document.getElementById("lesson-list-modal")?.classList.add("hidden");
+}
+
+// ── ショップ画面 ────────────────────────────────────────────────────
+
+function buildShopScreen(): void {
+  const el = document.getElementById("shop-screen")!;
+  el.innerHTML = `
+    <span id="shop-byte-label" class="cash-label shop-byte-label">💾 0</span>
+    <div class="char-select-title">🛒 ショップ</div>
+    <div class="shop-section-label">📚 レッスン</div>
+    <div id="shop-lesson-list" class="shop-lesson-list"></div>
+    <div class="shop-section-label">🔓 アンロック関数</div>
+    <div id="shop-unlock-list" class="shop-lesson-list"></div>
+    <div class="shop-footer">💡 購入は記録されますが、現時点ではゲーム内の挙動（使える関数）はまだ変わりません</div>
+    <button class="char-back-btn" id="shop-screen-back-btn">← 戻る</button>
+  `;
+  document.getElementById("shop-screen-back-btn")!.addEventListener("click", showMenuScreen);
+}
+
+function renderShopUnlockList(): void {
+  const listEl = document.getElementById("shop-unlock-list")!;
+  listEl.innerHTML = "";
+
+  const items = [...UNLOCKABLE_ITEMS].sort((a, b) => a.byteCost - b.byteCost);
+
+  for (const item of items) {
+    const owned      = isUnlockPurchased(item.key);
+    const totalBytes = loadTotalBytes();
+    const affordable = totalBytes >= item.byteCost;
+
+    const row = document.createElement("div");
+    row.className = "shop-lesson-row";
+    row.innerHTML = `
+      <div class="shop-lesson-info">
+        <span class="shop-lesson-title">${item.label}()</span>
+        <span class="shop-lesson-req">${item.doc}</span>
+      </div>
+      <div class="shop-lesson-actions">
+        ${owned
+          ? `<span class="shop-owned-badge">✅ 購入済み</span>`
+          : `<button class="widget-btn primary shop-buy-btn" ${affordable ? "" : "disabled"}>💾 ${item.byteCost} で購入</button>`}
+      </div>
+    `;
+
+    if (!owned) {
+      row.querySelector(".shop-buy-btn")!.addEventListener("click", () => {
+        if (!trySpendBytes(item.byteCost)) return;
+        purchaseUnlock(item.key);
+        renderShopUnlockList();
+        updateShopByteLabel();
+      });
+    }
+
+    listEl.appendChild(row);
+  }
+}
+
+function renderShopLessonList(): void {
+  const listEl = document.getElementById("shop-lesson-list")!;
+  listEl.innerHTML = "";
+
+  for (const lesson of LESSONS) {
+    const owned         = isLessonPurchased(lesson.id);
+    const prereqMet     = !lesson.requiresFn || devUnlocks[lesson.requiresFn];
+    const totalBytes    = loadTotalBytes();
+    const affordable    = totalBytes >= lesson.byteCost;
+
+    const row = document.createElement("div");
+    row.className = "shop-lesson-row";
+
+    let statusHtml: string;
+    if (owned) {
+      statusHtml = `<button class="widget-btn shop-view-btn">📖 見る</button>`;
+    } else if (!prereqMet) {
+      statusHtml = `<span class="shop-locked-note">🔒 ${lesson.requiresFn}() をアンロックしてください</span>`;
+    } else {
+      statusHtml = `<button class="widget-btn primary shop-buy-btn" ${affordable ? "" : "disabled"}>💾 ${lesson.byteCost} で購入</button>`;
+    }
+
+    row.innerHTML = `
+      <div class="shop-lesson-info">
+        <span class="shop-lesson-title">${lesson.title}</span>
+        <span class="shop-lesson-req">${lesson.requiresFn ? `前提: ${lesson.requiresFn}()` : "前提条件なし"}</span>
+      </div>
+      <div class="shop-lesson-actions">${statusHtml}</div>
+    `;
+
+    if (owned) {
+      row.querySelector(".shop-view-btn")!.addEventListener("click", () => showLessonContent(lesson));
+    } else if (prereqMet) {
+      const buyBtn = row.querySelector(".shop-buy-btn") as HTMLButtonElement | null;
+      buyBtn?.addEventListener("click", () => {
+        if (!trySpendBytes(lesson.byteCost)) return;
+        purchaseLesson(lesson.id);
+        renderShopLessonList();
+        updateShopByteLabel();
+      });
+    }
+
+    listEl.appendChild(row);
+  }
+}
+
 function buildReferenceModal(): void {
   const modal = document.createElement("div");
   modal.id = "ref-modal";
@@ -2060,80 +2558,6 @@ function buildReferenceModal(): void {
   backdrop.className = "pile-backdrop";
   backdrop.addEventListener("click", () => modal.classList.add("hidden"));
 
-  const sections: Array<{
-    title: string;
-    color: string;
-    items: Array<{ sig: string; cost: string; desc: string; example?: string }>;
-  }> = [
-    {
-      title: "🗡 スターターカード",
-      color: "var(--enemy)",
-      items: [
-        { sig: "attack()", cost: "1", desc: "敵に 3+min(3,⌊combo/4⌋) ダメージ（最大6）", example: "attack();" },
-        { sig: "block()",  cost: "1", desc: "ブロック +max(2, 5-⌊combo/2⌋)", example: "block();" },
-        { sig: "noop()",   cost: "0", desc: "何もしない（コンボ +1 のみ）", example: "noop();" },
-      ],
-    },
-    {
-      title: "📊 状態読み取り（コスト0）",
-      color: "var(--accent)",
-      items: [
-        { sig: "enemyHp()",     cost: "0", desc: "敵の現在 HP を返す",     example: "if (enemyHp() <= 12) execute();" },
-        { sig: "myHp()",        cost: "0", desc: "自分の現在 HP を返す",   example: "if (myHp() < 15) patch();" },
-        { sig: "myBlock()",     cost: "0", desc: "自分の現在ブロック量を返す", example: "if (myBlock() < 5) block();" },
-        { sig: "mainClock()",   cost: "0", desc: "残り Main Clock を返す", example: "while (mainClock() !== 0) attack();" },
-        { sig: "daemonCost()",  cost: "0", desc: "残り Daemon Cost を返す（Daemon内で使用）", example: "if (daemonCost() >= 1) attack();" },
-        { sig: "enemyBlock()",  cost: "0", desc: "敵の現在ブロック量を返す", example: "if (enemyBlock() > 0) attack();" },
-        { sig: "enemyIntent()", cost: "0", desc: "敵の次の行動 {kind, value, boosted?, ignoresBlock?}", example: 'if (enemyIntent().kind === "attack") block();' },
-        { sig: "damageDealtThisTurn()", cost: "0", desc: "このターン敵に与えた合計ダメージを返す", example: "if (damageDealtThisTurn() < 25) attack();" },
-        { sig: "sameActionStreak()", cost: "0", desc: "同じ関数を連続で呼んだ回数を返す", example: "if (sameActionStreak() >= 3) block();" },
-        { sig: "comboIncrement()", cost: "0", desc: "コンボが1回の使用で増加する量を返す（0なら増加停止中）", example: "if (comboIncrement() > 0) noop();" },
-        { sig: "turn()", cost: "0", desc: "現在のターン数を返す", example: "if (turn() > 10) attack();" },
-        { sig: "storedValue()", cost: "0", desc: "Object Breakerの変数に蓄積されている値を返す", example: "if (storedValue() >= 10) release();" },
-        { sig: "turnsSinceRelease()", cost: "0", desc: "release系(release/compact/bigRelease)を最後に使ってから経過したターン数を返す", example: "if (turnsSinceRelease() >= 1) release();" },
-      ],
-    },
-    {
-      title: "✨ Loop Runner カード一覧",
-      color: "var(--energy)",
-      items: [
-        { sig: "overClock()",   cost: "0", desc: "HP -2、エネルギー+1" },
-        { sig: "patch()",       cost: "0", desc: "HP +2 回復（使い捨て）" },
-        { sig: "initialize()",  cost: "1", desc: "ブロック+3、次ターンエネルギー+1" },
-        { sig: "forceQuit()",   cost: "1", desc: "4ダメージ、実行を終了する" },
-        { sig: "incrementalAttack()", cost: "2", desc: "コンボ数×2ダメージ" },
-        { sig: "bufferOverflowProtection()", cost: "1", desc: "手札1枚捨て、ブロック+3" },
-        { sig: "asyncDraw()",   cost: "1", desc: "2枚ドロー" },
-        { sig: "incrementalBlock()", cost: "2", desc: "ブロック+コンボ数" },
-        { sig: "execute()",     cost: "3", desc: "敵HP ≤ コンボ×3 なら即死" },
-        { sig: "compilerOptimization()", cost: "2", desc: "【Fatal】3枚ドロー、通常カードのコスト0" },
-        { sig: "overclockBurst()", cost: "0", desc: "エネルギー全回復、コンボ+3" },
-        { sig: "stackOverflow()", cost: "2", desc: "HP -3、コンボ増加が+5に" },
-      ],
-    },
-    {
-      title: "💾 Object Breaker カード一覧",
-      color: "var(--player)",
-      items: [
-        { sig: "attack()",  cost: "2", desc: "敵に 5 ダメージ" },
-        { sig: "block()",   cost: "2", desc: "ブロック +6" },
-        { sig: "charge()",  cost: "0", desc: "変数に +2 を格納" },
-        { sig: "store()",   cost: "2", desc: "変数に +4 を格納" },
-        { sig: "release()", cost: "1", desc: "変数の値だけ敵にダメージ、変数を0に" },
-        { sig: "compact()", cost: "1", desc: "変数を半分にし、減った分だけ即座に敵にダメージ" },
-        { sig: "defrag()",  cost: "0", desc: "HP +3 回復（使い捨て）" },
-        { sig: "fortify()", cost: "1", desc: "ブロック += max(2, ⌊変数/5⌋)" },
-        { sig: "double()",  cost: "3", desc: "変数を2倍にする" },
-        { sig: "overcharge()", cost: "2", desc: "変数に+8を格納。自分に2ダメージ" },
-        { sig: "siphon()",  cost: "0", desc: "変数から5を消費し、自分HPをその分回復" },
-        { sig: "surge()",   cost: "2", desc: "変数を1.5倍にする（切り捨て）" },
-        { sig: "bigRelease()", cost: "4", desc: "変数の1.5倍だけ敵にダメージ、変数を0に" },
-        { sig: "ironWall()", cost: "3", desc: "ブロック+14" },
-        { sig: "singularity()", cost: "3", desc: "【Fatal】変数を3倍にし、さらに+10する" },
-      ],
-    },
-  ];
-
   const popup = document.createElement("div");
   popup.className = "pile-popup ref-popup";
   popup.innerHTML = `
@@ -2141,38 +2565,9 @@ function buildReferenceModal(): void {
       <span class="pile-popup-title">📖 関数リファレンス</span>
       <button class="pile-popup-close" id="ref-close-btn">✕</button>
     </div>
+    <div id="ref-body" class="ref-body"></div>
   `;
 
-  const body = document.createElement("div");
-  body.className = "ref-body";
-
-  for (const sec of sections) {
-    const secEl = document.createElement("div");
-    secEl.className = "ref-section";
-    secEl.innerHTML = `<div class="ref-section-title" style="color:${sec.color}">${sec.title}</div>`;
-
-    for (const item of sec.items) {
-      const row = document.createElement("div");
-      row.className = "ref-row";
-      row.innerHTML = `
-        <div class="ref-row-top">
-          <code class="ref-sig">${item.sig}</code>
-          <span class="ref-cost">コスト: ${item.cost}</span>
-        </div>
-        <div class="ref-desc">${item.desc}</div>
-        ${item.example ? `<code class="ref-example">${item.example}</code>` : ""}
-      `;
-      row.addEventListener("click", () => {
-        const target = lastFocused ?? entries[0]?.editor;
-        if (target) insertText(target, item.example ? `${item.example}\n` : `${item.sig};\n`);
-        modal.classList.add("hidden");
-      });
-      secEl.appendChild(row);
-    }
-    body.appendChild(secEl);
-  }
-
-  popup.appendChild(body);
   modal.append(backdrop, popup);
   document.body.appendChild(modal);
 
@@ -2185,7 +2580,16 @@ function buildReferenceModal(): void {
   refBtn.id = "ref-btn";
   refBtn.textContent = "📖 関数一覧";
   hudEl.insertBefore(refBtn, hudEl.firstChild);
-  refBtn.addEventListener("click", () => modal.classList.toggle("hidden"));
+  refBtn.addEventListener("click", () => {
+    renderRefList();
+    modal.classList.toggle("hidden");
+  });
+
+  const lessonListBtn = document.createElement("button");
+  lessonListBtn.id = "lesson-list-btn";
+  lessonListBtn.textContent = "📚 レッスン一覧";
+  hudEl.insertBefore(lessonListBtn, refBtn.nextSibling);
+  lessonListBtn.addEventListener("click", showLessonListModal);
 }
 
 // ── ホームボタン ────────────────────────────────────────────────────
@@ -2245,6 +2649,8 @@ buildPresetModal();
 buildStatsModal();
 buildTutorialModal();
 buildReferenceModal();
+buildLessonContentModal();
+buildLessonListModal();
 buildEnemyWidget();
 buildPlayerWidget();
 buildLogWidget();
@@ -2278,6 +2684,8 @@ restoreEditorsFromStorage();
 updateCanvas();
 buildMenuScreen();
 buildCharSelectScreen();
+buildShopScreen();
+buildLessonScreen();
 showMenuScreen();
 
 // 開発用フック & アンロックパネル
@@ -2301,49 +2709,25 @@ if (import.meta.env.DEV) {
   const panel = document.createElement("div");
   panel.id = "unlock-panel";
   panel.className = "unlock-panel hidden";
+  const unlockRows = UNLOCKABLE_ITEMS.map(item => `
+    <label class="unlock-row">
+      <span class="unlock-name">${item.insert.replace(/\$\{1:([^}]*)\}/, "$1")}</span>
+      <span class="unlock-desc">${item.doc}</span>
+      <label class="toggle-switch">
+        <input type="checkbox" data-key="${item.key}">
+        <span class="toggle-slider"></span>
+      </label>
+    </label>
+  `).join("");
+
   panel.innerHTML = `
     <div class="unlock-panel-header">
       <span>🔓 アンロック関数 <span class="dev-badge">DEV</span></span>
       <button class="pile-popup-close" id="unlock-panel-close">✕</button>
     </div>
     <div class="unlock-panel-body">
-      <div class="unlock-section-label">デッキ情報</div>
-      <label class="unlock-row">
-        <span class="unlock-name">myDeck() / myHand() / myDrawPile() / myDiscard()</span>
-        <span class="unlock-desc">手札・デッキ・山札・捨て札の配列を取得</span>
-        <label class="toggle-switch">
-          <input type="checkbox" data-key="deckInfo">
-          <span class="toggle-slider"></span>
-        </label>
-      </label>
-
-      <div class="unlock-section-label">ターン制御</div>
-      <label class="unlock-row">
-        <span class="unlock-name">endTurn()</span>
-        <span class="unlock-desc">コードからターンを終了する</span>
-        <label class="toggle-switch">
-          <input type="checkbox" data-key="endTurn">
-          <span class="toggle-slider"></span>
-        </label>
-      </label>
-
-      <div class="unlock-section-label">コード機能</div>
-      <label class="unlock-row">
-        <span class="unlock-name">function キーワード</span>
-        <span class="unlock-desc">関数を定義して再利用できるようにする</span>
-        <label class="toggle-switch">
-          <input type="checkbox" data-key="functionKw">
-          <span class="toggle-slider"></span>
-        </label>
-      </label>
-      <label class="unlock-row">
-        <span class="unlock-name">アロー関数 <code>() =&gt; {}</code></span>
-        <span class="unlock-desc">短い関数を簡潔に書けるようにする</span>
-        <label class="toggle-switch">
-          <input type="checkbox" data-key="arrowFn">
-          <span class="toggle-slider"></span>
-        </label>
-      </label>
+      <div class="unlock-section-label">個別アンロック（コインショップ実装まではここで一時ON/OFF）</div>
+      ${unlockRows}
     </div>
   `;
   document.body.appendChild(panel);
@@ -2359,6 +2743,50 @@ if (import.meta.env.DEV) {
   unlockBtn.addEventListener("click", () => panel.classList.toggle("hidden"));
   document.getElementById("unlock-panel-close")!.addEventListener("click", () => {
     panel.classList.add("hidden");
+  });
+
+  // ── DEVメニュー（メインメニュー右上） ────────────────────────────
+  const devMenuBtn = document.createElement("button");
+  devMenuBtn.id = "dev-menu-btn";
+  devMenuBtn.className = "dev-menu-btn";
+  devMenuBtn.textContent = "🛠 DEVメニュー";
+  document.getElementById("menu-screen")!.appendChild(devMenuBtn);
+
+  const devMenuPanel = document.createElement("div");
+  devMenuPanel.id = "dev-menu-panel";
+  devMenuPanel.className = "dev-menu-panel hidden";
+  devMenuPanel.innerHTML = `
+    <div class="unlock-panel-header">
+      <span>🛠 DEVメニュー <span class="dev-badge">DEV</span></span>
+      <button class="pile-popup-close" id="dev-menu-close">✕</button>
+    </div>
+    <div class="unlock-panel-body">
+      <div class="unlock-section-label">バイトを追加</div>
+      <div class="dev-menu-row">
+        <input type="number" id="dev-menu-byte-input" class="dev-menu-input" value="1000" min="0" />
+        <button class="widget-btn primary" id="dev-menu-add-bytes-btn">➕ 追加</button>
+      </div>
+      <div class="unlock-section-label">購入済みアイテムをリセット</div>
+      <div class="dev-menu-row">
+        <button class="widget-btn danger" id="dev-menu-reset-purchases-btn">🔄 レッスン・アンロックを未購入に戻す</button>
+      </div>
+    </div>
+  `;
+  document.getElementById("menu-screen")!.appendChild(devMenuPanel);
+
+  devMenuBtn.addEventListener("click", () => devMenuPanel.classList.toggle("hidden"));
+  document.getElementById("dev-menu-close")!.addEventListener("click", () => {
+    devMenuPanel.classList.add("hidden");
+  });
+  document.getElementById("dev-menu-add-bytes-btn")!.addEventListener("click", () => {
+    const input  = document.getElementById("dev-menu-byte-input") as HTMLInputElement;
+    const amount = parseInt(input.value, 10);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    addBytes(amount);
+  });
+  document.getElementById("dev-menu-reset-purchases-btn")!.addEventListener("click", () => {
+    localStorage.removeItem("runtime_rogue_lessons");
+    localStorage.removeItem("runtime_rogue_purchased_unlocks");
   });
 }
 

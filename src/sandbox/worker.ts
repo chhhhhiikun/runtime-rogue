@@ -3,11 +3,25 @@ import { applyAction, type Action } from "../game/actions";
 import { CARDS, HAND_SIZE, getCardBaseCost, type CardId } from "../game/cards";
 import type { StageGimmick, StoredValueGimmick } from "../game/stages";
 
+// 常時ON（アンロック不要）: storedValue() turnsSinceRelease() comboCount() sameActionStreak()
+//                          daemonCost() mainClock() deploy(fn)
+// 以下は個別にアンロックする（ゲーム内通貨で購入。現状はDEV用アンロックパネルで手動ON/OFF）
 export interface UnlockFunctions {
-  deckInfo: boolean;   // myDeck() myHand() myDrawPile() myDiscard()
-  endTurn: boolean;    // endTurn()
-  functionKw: boolean; // function キーワード
-  arrowFn: boolean;    // () => {} アロー関数
+  enemyHp: boolean;
+  myHp: boolean;
+  myBlock: boolean;
+  enemyBlock: boolean;
+  damageDealtThisTurn: boolean;
+  comboIncrement: boolean;
+  turn: boolean;
+  endTurn: boolean;
+  enemyIntent: boolean;
+  isUsable: boolean;
+  myDeck: boolean;
+  myHand: boolean;
+  myDrawPile: boolean;
+  myDiscard: boolean;
+  myDeployed: boolean;
 }
 
 export interface DeckSnapshot {
@@ -111,16 +125,6 @@ function run(req: RunRequest): RunResult {
   // Cost reductions (for refactoring)
   const costReductions: Record<string, number> = {};
 
-  // ── コード機能の制限チェック ──────────────────────────────────────
-  if (!req.unlocks.functionKw && /\bfunction\b/.test(req.code)) {
-    return { actions: [], finalState: state, consoleLogs,
-      error: "「function」キーワードはまだアンロックされていません" };
-  }
-  if (!req.unlocks.arrowFn && /=>/.test(req.code)) {
-    return { actions: [], finalState: state, consoleLogs,
-      error: "「アロー関数（=>）」はまだアンロックされていません" };
-  }
-
   // ── 静的解析: 手札の枚数を超えて関数名が書かれていないかチェック ──
   // 同じ関数を手札の枚数より多く「書く」ことはできない（ループの中で1回書くのはOK）。
   // Unique属性のカードは実質的に手札1枚分の制限として、この仕組みに自然に含まれる。
@@ -180,7 +184,13 @@ function run(req: RunRequest): RunResult {
   };
 
   // record()呼び出し時点のスタックトレースから、new Function生成コード内の行番号を推定する（ベストエフォート）。
-  // 実行スクリプトの末尾に付与した//# sourceURL=を目印にスタックフレームを探す
+  // 実行スクリプトの末尾に付与した//# sourceURL=を目印にスタックフレームを探す。
+  //
+  // ライブラリの自作関数（例: doAttack(){ attack(); }）経由でカードが呼ばれると、スタックには
+  // rr-main.jsフレームが複数積まれる（① ライブラリ内でattack()を呼んだ行、② メインでdoAttack()を呼んだ行）。
+  // ①はprefixCode（ライブラリ）領域なのでcomputeSourceLineがundefinedを返す。最初に見つかったフレームで
+  // 即returnすると①でundefinedになり、メイン側の②に到達できずハイライトが更新されない不具合になる。
+  // そのため、computeSourceLineがメイン領域の行（>0）を返す最初のフレームまでスキャンを続ける。
   const captureSourceLine = (): number | undefined => {
     const stack = new Error().stack;
     if (!stack) return undefined;
@@ -188,7 +198,9 @@ function run(req: RunRequest): RunResult {
     for (const line of stack.split("\n")) {
       if (!line.includes(marker)) continue;
       const m = line.match(/:(\d+):\d+\)?\s*$/);
-      if (m) return computeSourceLine(parseInt(m[1], 10));
+      if (!m) continue;
+      const resolved = computeSourceLine(parseInt(m[1], 10));
+      if (resolved !== undefined) return resolved; // ライブラリ領域のフレーム(undefined)はスキップ
     }
     return undefined;
   };
@@ -712,35 +724,35 @@ function run(req: RunRequest): RunResult {
 
   const toFnNames = (ids: CardId[]) => ids.map(id => CARDS[id]?.fn ?? id);
 
+  // 常時ON（アンロック不要）
   const readApi: Record<string, () => unknown> = {
-    enemyHp:     () => state.enemy.hp,
-    myHp:        () => state.player.hp,
-    myBlock:     () => state.player.block,
-    mainClock:   () => state.energy,
-    enemyBlock:  () => state.enemy.block,
-    enemyIntent: () => ({ ...state.enemy.intent }),
-    comboCount:  () => state.comboCount,
-    daemonCost:  () => state.daemonCost,
-    damageDealtThisTurn: () => state.damageDealtThisTurn,
-    sameActionStreak:    () => state.sameActionStreak,
-    comboIncrement:      () => state.comboIncrement,
-    turn:                () => state.turn,
-    storedValue:         () => state.storedValue,
-    turnsSinceRelease:   () => state.turnsSinceRelease,
+    mainClock:         () => state.energy,
+    daemonCost:        () => state.daemonCost,
+    comboCount:        () => state.comboCount,
+    sameActionStreak:  () => state.sameActionStreak,
+    storedValue:       () => state.storedValue,
+    turnsSinceRelease: () => state.turnsSinceRelease,
   };
 
-  if (req.unlocks.deckInfo && req.deckSnapshot) {
-    const snap = req.deckSnapshot;
-    readApi["myDeck"]      = () => toFnNames([...snap.full]);
-    readApi["myHand"]      = () => toFnNames([...runtimeHand]);
-    readApi["myDrawPile"]  = () => toFnNames([...runtimeDrawPile]);
-    readApi["myDiscard"]   = () => toFnNames([...runtimeDiscardPile]);
-    readApi["myDeployed"]  = () => toFnNames([...deployedCardIds]);
-  }
+  // 個別にアンロックする関数
+  if (req.unlocks.enemyHp)              readApi["enemyHp"]              = () => state.enemy.hp;
+  if (req.unlocks.myHp)                 readApi["myHp"]                 = () => state.player.hp;
+  if (req.unlocks.myBlock)              readApi["myBlock"]              = () => state.player.block;
+  if (req.unlocks.enemyBlock)           readApi["enemyBlock"]           = () => state.enemy.block;
+  if (req.unlocks.damageDealtThisTurn)  readApi["damageDealtThisTurn"]  = () => state.damageDealtThisTurn;
+  if (req.unlocks.comboIncrement)       readApi["comboIncrement"]       = () => state.comboIncrement;
+  if (req.unlocks.turn)                 readApi["turn"]                 = () => state.turn;
+  if (req.unlocks.enemyIntent)          readApi["enemyIntent"]          = () => ({ ...state.enemy.intent });
 
-  // endTurn() は常にアンロック済み。intentPattern が渡されている場合は
-  // 敵ターン処理をワーカー内で完結させ、なければ従来の EndTurnSignal を投げる。
-  if (intentPattern.length > 0) {
+  if (req.unlocks.myDeck     && req.deckSnapshot) readApi["myDeck"]     = () => toFnNames([...req.deckSnapshot!.full]);
+  if (req.unlocks.myHand)                         readApi["myHand"]     = () => toFnNames([...runtimeHand]);
+  if (req.unlocks.myDrawPile)                     readApi["myDrawPile"] = () => toFnNames([...runtimeDrawPile]);
+  if (req.unlocks.myDiscard)                      readApi["myDiscard"]  = () => toFnNames([...runtimeDiscardPile]);
+  if (req.unlocks.myDeployed)                     readApi["myDeployed"] = () => toFnNames([...deployedCardIds]);
+
+  // endTurn(): intentPattern が渡されている場合は敵ターン処理をワーカー内で完結させ、
+  // なければ従来の EndTurnSignal を投げる。いずれもreq.unlocks.endTurnで実際にゲートする。
+  if (req.unlocks.endTurn && intentPattern.length > 0) {
     readApi["endTurn"] = (): void => {
       // 敵が既に死んでいれば即勝利
       if (state.enemy.hp <= 0) throw new CombatEndSignal("victory");
@@ -914,7 +926,7 @@ function run(req: RunRequest): RunResult {
       if (state.enemy.hp <= 0) throw new CombatEndSignal("victory");
       if (state.player.hp <= 0) throw new CombatEndSignal("defeat");
     };
-  } else {
+  } else if (req.unlocks.endTurn) {
     // intentPattern 未設定時は従来通り EndTurnSignal
     readApi["endTurn"] = () => { throw new EndTurnSignal(); };
   }
@@ -1054,7 +1066,7 @@ function run(req: RunRequest): RunResult {
       for (const [name, fn] of Object.entries(readApi)) {
         daemonApiNames.push(name); daemonApiValues.push(fn);
       }
-      daemonApiNames.push("isUsable"); daemonApiValues.push(isUsableFn);
+      if (req.unlocks.isUsable) { daemonApiNames.push("isUsable"); daemonApiValues.push(isUsableFn); }
       daemonApiNames.push("deploy");   daemonApiValues.push(deployFn);
 
       try {
@@ -1185,7 +1197,7 @@ function run(req: RunRequest): RunResult {
   for (const [name, fn] of Object.entries(readApi)) {
     apiNames.push(name); apiValues.push(fn);
   }
-  apiNames.push("isUsable"); apiValues.push(isUsableFn);
+  if (req.unlocks.isUsable) { apiNames.push("isUsable"); apiValues.push(isUsableFn); }
   apiNames.push("deploy");   apiValues.push(deployFn);
 
   // allowedFns 指定時（チュートリアル等）は、その名前の関数だけをサンドボックスに公開する

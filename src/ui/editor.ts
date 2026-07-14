@@ -81,40 +81,43 @@ declare function block(): void;
 
 let _getHand: () => CardId[] = () => [];
 let _getUnlocks: () => UnlockFunctions = () => ({
-  deckInfo: false, endTurn: false, functionKw: false, arrowFn: false,
+  enemyHp: false, myHp: false, myBlock: false, enemyBlock: false,
+  damageDealtThisTurn: false, comboIncrement: false, turn: false,
+  endTurn: false, enemyIntent: false, isUsable: false,
+  myDeck: false, myHand: false, myDrawPile: false, myDiscard: false, myDeployed: false,
 });
 let _providerRegistered = false;
 
-const READ_ITEMS: Array<{ label: string; insert: string; detail: string; doc: string }> = [
-  { label: "enemyHp",     insert: "enemyHp()",     detail: "() → number",       doc: "敵の現在HP" },
-  { label: "myHp",        insert: "myHp()",        detail: "() → number",       doc: "自分の現在HP" },
-  { label: "myBlock",     insert: "myBlock()",     detail: "() → number",       doc: "自分の現在ブロック量" },
+// 常時ON（アンロック不要）
+export const READ_ITEMS: Array<{ label: string; insert: string; detail: string; doc: string }> = [
   { label: "mainClock",   insert: "mainClock()",   detail: "() → number",       doc: "残りMain Clock" },
   { label: "daemonCost",  insert: "daemonCost()",  detail: "() → number",       doc: "残りDaemon Cost" },
-  { label: "enemyBlock",  insert: "enemyBlock()",  detail: "() → number",       doc: "敵の現在ブロック量" },
-  { label: "enemyIntent", insert: "enemyIntent()", detail: "() → {kind,value}", doc: "敵の次の行動" },
   { label: "comboCount",  insert: "comboCount()",  detail: "() → number",       doc: "現在のコンボカウンター値" },
-  { label: "damageDealtThisTurn", insert: "damageDealtThisTurn()", detail: "() → number", doc: "このターン敵に与えた合計ダメージ" },
   { label: "sameActionStreak",    insert: "sameActionStreak()",    detail: "() → number", doc: "同じ関数を連続で呼んだ回数" },
-  { label: "comboIncrement",      insert: "comboIncrement()",      detail: "() → number", doc: "コンボが1回の使用で増加する量（0なら増加停止中）" },
-  { label: "turn",                insert: "turn()",                detail: "() → number", doc: "現在のターン数" },
   { label: "storedValue",         insert: "storedValue()",         detail: "() → number", doc: "Object Breakerの変数に蓄積されている値" },
   { label: "turnsSinceRelease",   insert: "turnsSinceRelease()",   detail: "() → number", doc: "release系(release/compact/bigRelease)を最後に使ってから経過したターン数" },
-  { label: "isUsable",    insert: "isUsable(\"${1:attack}\")", detail: "(fn: string) → boolean", doc: "そのカードが今のターン使用可能かどうか（Unique使用済み等はfalse）" },
   { label: "deploy",      insert: "deploy(\"${1:attack}\")",   detail: "(fn: string) → void",    doc: "手札のカードをDaemonへ常駐化する（コスト: 基礎コスト×2をMain Clockから消費）" },
 ];
 
-const DECK_INFO_ITEMS: Array<{ label: string; insert: string; detail: string; doc: string }> = [
-  { label: "myDeck",     insert: "myDeck()",     detail: "() → CardId[]", doc: "デッキ全カードの配列" },
-  { label: "myHand",     insert: "myHand()",     detail: "() → CardId[]", doc: "現在の手札" },
-  { label: "myDrawPile", insert: "myDrawPile()", detail: "() → CardId[]", doc: "山札（ドロー待ちカード）" },
-  { label: "myDiscard",  insert: "myDiscard()",  detail: "() → CardId[]", doc: "捨て札" },
-  { label: "myDeployed", insert: "myDeployed()", detail: "() → CardId[]", doc: "Daemonにデプロイ済みのカード" },
+// 個別にアンロックする関数。byteCostは情報の価値に応じた6段階のティア
+// （1,000〜10,000バイト。詳細はCLAUDE.mdの「状態読み取り関数・アンロック関数」参照）
+export const UNLOCKABLE_ITEMS: Array<{ label: string; insert: string; detail: string; doc: string; key: keyof UnlockFunctions; byteCost: number }> = [
+  { label: "enemyHp",     insert: "enemyHp()",     detail: "() → number",       doc: "敵の現在HP",         key: "enemyHp", byteCost: 2000 },
+  { label: "myHp",        insert: "myHp()",        detail: "() → number",       doc: "自分の現在HP",       key: "myHp", byteCost: 1000 },
+  { label: "myBlock",     insert: "myBlock()",     detail: "() → number",       doc: "自分の現在ブロック量", key: "myBlock", byteCost: 1000 },
+  { label: "enemyBlock",  insert: "enemyBlock()",  detail: "() → number",       doc: "敵の現在ブロック量",   key: "enemyBlock", byteCost: 2000 },
+  { label: "damageDealtThisTurn", insert: "damageDealtThisTurn()", detail: "() → number", doc: "このターン敵に与えた合計ダメージ", key: "damageDealtThisTurn", byteCost: 2000 },
+  { label: "comboIncrement",      insert: "comboIncrement()",      detail: "() → number", doc: "コンボが1回の使用で増加する量（0なら増加停止中）", key: "comboIncrement", byteCost: 4000 },
+  { label: "turn",                insert: "turn()",                detail: "() → number", doc: "現在のターン数", key: "turn", byteCost: 1000 },
+  { label: "endTurn",     insert: "endTurn()",     detail: "() → void",         doc: "ターンを終了する", key: "endTurn", byteCost: 4000 },
+  { label: "enemyIntent", insert: "enemyIntent()", detail: "() → {kind,value}", doc: "敵の次の行動", key: "enemyIntent", byteCost: 8000 },
+  { label: "isUsable",    insert: "isUsable(\"${1:attack}\")", detail: "(fn: string) → boolean", doc: "そのカードが今のターン使用可能かどうか（Unique使用済み等はfalse）", key: "isUsable", byteCost: 4000 },
+  { label: "myDeck",     insert: "myDeck()",     detail: "() → CardId[]", doc: "デッキ全カードの配列", key: "myDeck", byteCost: 4000 },
+  { label: "myHand",     insert: "myHand()",     detail: "() → CardId[]", doc: "現在の手札", key: "myHand", byteCost: 6000 },
+  { label: "myDrawPile", insert: "myDrawPile()", detail: "() → CardId[]", doc: "山札（ドロー待ちカード）", key: "myDrawPile", byteCost: 8000 },
+  { label: "myDiscard",  insert: "myDiscard()",  detail: "() → CardId[]", doc: "捨て札", key: "myDiscard", byteCost: 2000 },
+  { label: "myDeployed", insert: "myDeployed()", detail: "() → CardId[]", doc: "Daemonにデプロイ済みのカード", key: "myDeployed", byteCost: 4000 },
 ];
-
-const END_TURN_ITEM = {
-  label: "endTurn", insert: "endTurn()", detail: "() → void", doc: "ターンを終了する",
-};
 
 function ensureProvider(): void {
   if (_providerRegistered) return;
@@ -168,29 +171,18 @@ function ensureProvider(): void {
         range,
       }));
 
-      const unlockItems: monaco.languages.CompletionItem[] = [];
-      if (unlocks.deckInfo) {
-        DECK_INFO_ITEMS.forEach((item, i) => unlockItems.push({
-          label:         item.label,
-          kind:          monaco.languages.CompletionItemKind.Function,
-          detail:        item.detail,
-          documentation: item.doc,
-          insertText:    item.insert,
-          sortText:      `2${String(i).padStart(3, "0")}`,
+      const unlockItems: monaco.languages.CompletionItem[] = UNLOCKABLE_ITEMS
+        .filter(item => unlocks[item.key])
+        .map((item, i) => ({
+          label:           item.label,
+          kind:            monaco.languages.CompletionItemKind.Function,
+          detail:          item.detail,
+          documentation:   item.doc,
+          insertText:      item.insert,
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          sortText:        `2${String(i).padStart(3, "0")}`,
           range,
         }));
-      }
-      if (unlocks.endTurn) {
-        unlockItems.push({
-          label:         END_TURN_ITEM.label,
-          kind:          monaco.languages.CompletionItemKind.Function,
-          detail:        END_TURN_ITEM.detail,
-          documentation: END_TURN_ITEM.doc,
-          insertText:    END_TURN_ITEM.insert,
-          sortText:      "200",
-          range,
-        });
-      }
 
       return { suggestions: [...cardItems, ...readItems, ...unlockItems] };
     },
@@ -252,7 +244,14 @@ export function insertText(editor: MonacoEditor, text: string): void {
 }
 
 // Monaco のトークナイザでコード文字列をシンタックスハイライト済みHTMLに変換する
-// （チュートリアルウィンドウ等、エディタ以外の場所でコード例を表示するために使う）
+// （チュートリアルウィンドウ等、エディタ以外の場所でコード例を表示するために使う）。
+// Markdownフェンスの慣用名（js/ts）はMonacoの言語IDではないため、ここで正式IDに解決する。
+// 未知のIDを渡すとcolorizeはエラーにならず「全トークン無色（mtk1）」で返すので、ズレに気づきにくい
+const COLORIZE_LANG_ALIASES: Record<string, string> = {
+  js: "javascript",
+  ts: "typescript",
+};
+
 export async function colorizeCode(code: string, language = "javascript"): Promise<string> {
-  return monaco.editor.colorize(code, language, {});
+  return monaco.editor.colorize(code, COLORIZE_LANG_ALIASES[language] ?? language, {});
 }

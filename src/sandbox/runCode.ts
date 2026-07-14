@@ -6,11 +6,13 @@ import type { StageGimmick, StoredValueGimmick } from "../game/stages";
 
 export type { UnlockFunctions, DeckSnapshot };
 
+// コインショップ（未実装）が入るまでは、既存プレイヤー体験を変えないため全てON。
+// DEV用アンロックパネルで個別に一時OFFにして動作確認できる。
 export const DEFAULT_UNLOCKS: UnlockFunctions = {
-  deckInfo:   true,
-  endTurn:    true,
-  functionKw: true,
-  arrowFn:    true,
+  enemyHp: true, myHp: true, myBlock: true, enemyBlock: true,
+  damageDealtThisTurn: true, comboIncrement: true, turn: true,
+  endTurn: true, enemyIntent: true, isUsable: true,
+  myDeck: true, myHand: true, myDrawPile: true, myDiscard: true, myDeployed: true,
 };
 
 // Worker はメッセージごとに独立したステートレス処理（RunRequest→RunResult）なので、
