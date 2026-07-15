@@ -10,7 +10,7 @@ import { TUTORIAL_STEPS, TUTORIAL_COMPLETE_OVERLAY, TUTORIAL_COMPLETE_LOG } from
 import { LESSONS, type LessonDef } from "./game/lessons";
 import { Deck } from "./game/deck";
 import { applyAction } from "./game/actions";
-import { runUserCode, DEFAULT_UNLOCKS, type UnlockFunctions, type DeckSnapshot } from "./sandbox/runCode";
+import { runUserCode, type UnlockFunctions, type DeckSnapshot } from "./sandbox/runCode";
 import type { RunResult } from "./sandbox/worker";
 import {
   render, renderPileCards,
@@ -1107,8 +1107,9 @@ function purchaseLesson(id: string): void {
 }
 
 // ── アンロック関数（購入済みIDの永続化） ──────────────────────────────
-// 現時点では購入してもゲーム内の挙動（devUnlocks）は変えない。
-// DEFAULT_UNLOCKSが全てtrueのまま実際のゲート化は別途行うため、ここは購入記録のみ
+// 購入済みIDのみtrueにしたUnlockFunctionsをdevUnlocksの初期値として使う（実ゲート化）。
+// 「🔓アンロック（DEV）」パネルのトグルは、この購入記録とは独立にdevUnlocksをその場で上書きする
+// テスト用スイッチとして扱う（ONで未購入でも使える化、OFFで購入済みでも一時的に塞げる）。
 
 function loadPurchasedUnlocks(): Array<keyof UnlockFunctions> {
   try {
@@ -1117,6 +1118,18 @@ function loadPurchasedUnlocks(): Array<keyof UnlockFunctions> {
   } catch {
     return [];
   }
+}
+
+function computeUnlocksFromPurchases(): UnlockFunctions {
+  const unlocks: UnlockFunctions = {
+    enemyHp: false, myHp: false, myBlock: false, enemyBlock: false,
+    damageDealtThisTurn: false, comboIncrement: false, turn: false,
+    endTurn: false, enemyIntent: false, isUsable: false,
+    myDeck: false, myHand: false, myDrawPile: false, myDiscard: false, myDeployed: false,
+    cardCost: false,
+  };
+  for (const key of loadPurchasedUnlocks()) unlocks[key] = true;
+  return unlocks;
 }
 
 function isUnlockPurchased(key: keyof UnlockFunctions): boolean {
@@ -1132,6 +1145,7 @@ function purchaseUnlock(key: keyof UnlockFunctions): void {
   } catch {
     // ignore storage errors
   }
+  devUnlocks = { ...devUnlocks, [key]: true };
 }
 
 function updateCashLabel(): void {
@@ -1332,7 +1346,7 @@ const TUTORIAL_INITIAL_UNLOCKS: UnlockFunctions = {
   cardCost: false,
 };
 
-let devUnlocks: UnlockFunctions = { ...DEFAULT_UNLOCKS };
+let devUnlocks: UnlockFunctions = computeUnlocksFromPurchases();
 
 function getDeckSnapshot(): DeckSnapshot {
   return {
@@ -1765,6 +1779,7 @@ function startTutorial(): void {
 function endTutorialAndReturn(): void {
   tutorialMode = false;
   activeStages = STAGES;
+  devUnlocks   = computeUnlocksFromPurchases();
   setTutorialUIVisible(true);
   removeTutorialWidget();
   removeTutorialHintWidget();
@@ -2518,7 +2533,7 @@ function buildShopScreen(): void {
     <div id="shop-lesson-list" class="shop-lesson-list"></div>
     <div class="shop-section-label">🔓 アンロック関数</div>
     <div id="shop-unlock-list" class="shop-lesson-list"></div>
-    <div class="shop-footer">💡 購入は記録されますが、現時点ではゲーム内の挙動（使える関数）はまだ変わりません</div>
+    <div class="shop-footer">💡 購入すると、そのターンからバトル中に対応する関数が使えるようになります</div>
     <button class="char-back-btn" id="shop-screen-back-btn">← 戻る</button>
   `;
   document.getElementById("shop-screen-back-btn")!.addEventListener("click", showMenuScreen);
@@ -2554,6 +2569,7 @@ function renderShopUnlockList(): void {
         if (!trySpendBytes(item.byteCost)) return;
         purchaseUnlock(item.key);
         renderShopUnlockList();
+        renderShopLessonList();
         updateShopByteLabel();
       });
     }
@@ -2785,7 +2801,7 @@ if (import.meta.env.DEV) {
       <button class="pile-popup-close" id="unlock-panel-close">✕</button>
     </div>
     <div class="unlock-panel-body">
-      <div class="unlock-section-label">個別アンロック（コインショップ実装まではここで一時ON/OFF）</div>
+      <div class="unlock-section-label">個別アンロック（購入状況に関わらずここで一時ON/OFF）</div>
       ${unlockRows}
     </div>
   `;
@@ -2793,13 +2809,24 @@ if (import.meta.env.DEV) {
 
   panel.querySelectorAll<HTMLInputElement>("input[data-key]").forEach(cb => {
     const key = cb.dataset.key as keyof UnlockFunctions;
-    cb.checked = devUnlocks[key];
     cb.addEventListener("change", () => {
       devUnlocks = { ...devUnlocks, [key]: cb.checked };
     });
   });
 
-  unlockBtn.addEventListener("click", () => panel.classList.toggle("hidden"));
+  // パネルを開くたびに、現在のdevUnlocks（購入状況＋前回までのDEVトグル）でチェック状態を同期する
+  const syncUnlockPanelCheckboxes = (): void => {
+    panel.querySelectorAll<HTMLInputElement>("input[data-key]").forEach(cb => {
+      const key = cb.dataset.key as keyof UnlockFunctions;
+      cb.checked = devUnlocks[key];
+    });
+  };
+  syncUnlockPanelCheckboxes();
+
+  unlockBtn.addEventListener("click", () => {
+    if (panel.classList.contains("hidden")) syncUnlockPanelCheckboxes();
+    panel.classList.toggle("hidden");
+  });
   document.getElementById("unlock-panel-close")!.addEventListener("click", () => {
     panel.classList.add("hidden");
   });
@@ -2846,6 +2873,7 @@ if (import.meta.env.DEV) {
   document.getElementById("dev-menu-reset-purchases-btn")!.addEventListener("click", () => {
     localStorage.removeItem("runtime_rogue_lessons");
     localStorage.removeItem("runtime_rogue_purchased_unlocks");
+    if (!tutorialMode) devUnlocks = computeUnlocksFromPurchases();
   });
 }
 

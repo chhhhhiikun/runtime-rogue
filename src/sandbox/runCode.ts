@@ -6,8 +6,8 @@ import type { StageGimmick, StoredValueGimmick, WeaknessGimmick } from "../game/
 
 export type { UnlockFunctions, DeckSnapshot };
 
-// コインショップ（未実装）が入るまでは、既存プレイヤー体験を変えないため全てON。
-// DEV用アンロックパネルで個別に一時OFFにして動作確認できる。
+// unlocks引数省略時のフォールバック値。main.tsは常にdevUnlocks（購入状況ベース）を明示的に渡すため
+// 実プレイでは使われない。呼び出し元省略時に「機能を絞りすぎて動かない」事故を避けるため全てONにしてある。
 export const DEFAULT_UNLOCKS: UnlockFunctions = {
   enemyHp: true, myHp: true, myBlock: true, enemyBlock: true,
   damageDealtThisTurn: true, comboIncrement: true, turn: true,
