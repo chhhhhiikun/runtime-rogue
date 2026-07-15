@@ -5,7 +5,7 @@ import { type MonacoEditor, createEditor, getCode, setCode, insertText, colorize
 import { MAX_ENERGY, MAX_DAEMON_COST, ERROR_TYPES, type CombatState, type ErrorType } from "./game/state";
 import { HAND_SIZE, CARDS, getCardBaseCost, type CardId } from "./game/cards";
 import { CHARACTERS, getCharacter, getAllCharacterCards, type CharacterDef } from "./game/characters";
-import { STAGES, type StageDef, type StageGimmick, type StoredValueGimmick, type WeaknessGimmick } from "./game/stages";
+import { STAGES, type StageDef, type StageGimmick, type StoredValueGimmick, type WeaknessGimmick, type RngGimmick } from "./game/stages";
 import { TUTORIAL_STEPS, TUTORIAL_COMPLETE_OVERLAY, TUTORIAL_COMPLETE_LOG } from "./game/tutorial";
 import { LESSONS, type LessonDef } from "./game/lessons";
 import { Deck } from "./game/deck";
@@ -848,6 +848,9 @@ function buildConsoleWidget(): void {
       sameActionStreak:  () => state.sameActionStreak,
       storedValue:       () => state.storedValue,
       turnsSinceRelease: () => state.turnsSinceRelease,
+      rngSeed:           () => state.rngSeed,
+      missStreak:        () => state.missStreak,
+      seedLockRemaining: () => state.seedLockRemaining,
     };
     if (devUnlocks.enemyHp)             readFns["enemyHp"]             = () => state.enemy.hp;
     if (devUnlocks.myHp)                readFns["myHp"]                = () => state.player.hp;
@@ -1835,6 +1838,17 @@ function describeWeaknessGimmick(g: WeaknessGimmick): string {
   }
 }
 
+function describeRngGimmick(g: RngGimmick): string {
+  switch (g.kind) {
+    case "streamInterference":
+      return `stream干渉: 敵の行動1回につき、seedが${g.extraStepsPerAction}つ余分に進む（seedLock()で無効化可能）`;
+    case "seedFreeze":
+      return `seed凍結: ${g.interval}ターンごとに${g.freezeDuration}ターンの間、rngSeed()が凍結時点の古い値を返し続ける`;
+    case "formulaDrift":
+      return `式ドリフト: ${g.turnThreshold}ターンを超えると、超過ターンごとにLCGの乗数が${g.driftPerTurn}ずつ変化する`;
+  }
+}
+
 async function startBattle(): Promise<void> {
   // 二重クリック等で短時間に複数回呼ばれても、実際の戦闘開始処理は1回しか走らせない
   if (startingBattle) return;
@@ -1853,6 +1867,11 @@ function rollWeakness(): { weakness: ErrorType; edgeWeakness: ErrorType } {
   const remaining = ERROR_TYPES.filter(t => t !== weakness);
   const edgeWeakness = remaining[Math.floor(Math.random() * remaining.length)];
   return { weakness, edgeWeakness };
+}
+
+// RNG Cracker: 内部seedの戦闘開始時（ターン1）の初期値。以降はworker.ts側のLCGで決定論的に更新される
+function rollRngSeed(): number {
+  return Math.floor(Math.random() * 233280);
 }
 
 async function startBattleInner(): Promise<void> {
@@ -1899,6 +1918,14 @@ async function startBattleInner(): Promise<void> {
     matchedHitsThisTurn: 0,
     weaknessDisabledThisTurn: false,
     weaknessCardUseCount: {},
+    rngSeed: rollRngSeed(),
+    missStreak: 0,
+    seedLockRemaining: 0,
+    rngSeedFreezeSnapshot: 0,
+    oddsBoostActive: false,
+    insuranceActive: false,
+    lastGambleCardId: null,
+    lastGambleAmount: 0,
   };
   deck = new Deck([...deckCards]);
   over = false;
@@ -1924,6 +1951,9 @@ async function startBattleInner(): Promise<void> {
   if (stage.weaknessGimmick) {
     appendLog(`⚙ ギミック: ${describeWeaknessGimmick(stage.weaknessGimmick)}`, "sys");
   }
+  if (stage.rngGimmick) {
+    appendLog(`⚙ ギミック: ${describeRngGimmick(stage.rngGimmick)}`, "sys");
+  }
   entries.forEach(e => { e.errorEl.textContent = ""; });
 
   // 毎ターン開始時に5枚ドロー（1ターン目分をここで実行）
@@ -1946,7 +1976,7 @@ async function startBattleInner(): Promise<void> {
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
-    undefined, !tutorialDaemonLocked(), stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick,
+    undefined, !tutorialDaemonLocked(), stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick, stage.rngGimmick,
   );
   await processRunResult(result);
 }
@@ -2076,6 +2106,15 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
     state.matchedHitsThisTurn        = result.finalState.matchedHitsThisTurn;
     state.weaknessDisabledThisTurn   = result.finalState.weaknessDisabledThisTurn;
     state.weaknessCardUseCount       = result.finalState.weaknessCardUseCount;
+
+    state.rngSeed              = result.finalState.rngSeed;
+    state.missStreak           = result.finalState.missStreak;
+    state.seedLockRemaining    = result.finalState.seedLockRemaining;
+    state.rngSeedFreezeSnapshot = result.finalState.rngSeedFreezeSnapshot;
+    state.oddsBoostActive      = result.finalState.oddsBoostActive;
+    state.insuranceActive      = result.finalState.insuranceActive;
+    state.lastGambleCardId     = result.finalState.lastGambleCardId;
+    state.lastGambleAmount     = result.finalState.lastGambleAmount;
   }
 
   updateDaemonDisplay();
@@ -2159,7 +2198,7 @@ async function onRun(entry: EditorEntry): Promise<void> {
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
-    allowedFns, false, stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick,
+    allowedFns, false, stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick, stage.rngGimmick,
   );
   await processRunResult(result, entry);
 }
@@ -2187,7 +2226,7 @@ async function onEndTurn(): Promise<void> {
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
-    undefined, false, stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick,
+    undefined, false, stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick, stage.rngGimmick,
   );
   await processRunResult(result);
 }

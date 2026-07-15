@@ -52,6 +52,15 @@ export interface CombatState {
   matchedHitsThisTurn: number;        // このターン中に弱点が真に一致した回数（例外耐性ギミック用。ターン境界でリセット）
   weaknessDisabledThisTurn: boolean;  // trueの間、弱点系カードは強制的に不一致扱いになる（防御的コンパイルギミック用）
   weaknessCardUseCount: Record<string, number>; // 弱点系カードごとの戦闘通算使用回数（サイレントキャッチギミック用）
+  // RNG Cracker: 内部seed（LCGで決定論的に更新される。戦闘開始時にランダムな初期値をセット）
+  rngSeed: number;
+  missStreak: number;           // 直近の成功以降、ギャンブル系カードが連続で外れた回数（martingale用）
+  seedLockRemaining: number;    // seedLock()の効果があと何ターン残っているか（streamInterferenceギミック無効化用）
+  rngSeedFreezeSnapshot: number; // seedFreezeギミック発動中にrngSeed()が返す、凍結時点でのスナップショット値
+  oddsBoostActive: boolean;     // oddsBoost()の効果が次の1回分残っているか（ターン境界で失効）
+  insuranceActive: boolean;     // insurance()の効果が次の1回分残っているか（ターン境界で失効）
+  lastGambleCardId: string | null; // 直近のギャンブル系カード呼び出しのCardId（retryRoll用。ターン境界でリセット）
+  lastGambleAmount: number;        // 直近のギャンブル系カード呼び出しで実際に適用された数値（retryRoll用）
 }
 
 export const MAX_ENERGY = 10;
@@ -98,5 +107,13 @@ export function initialState(): CombatState {
     matchedHitsThisTurn: 0,
     weaknessDisabledThisTurn: false,
     weaknessCardUseCount: {},
+    rngSeed: 0,
+    missStreak: 0,
+    seedLockRemaining: 0,
+    rngSeedFreezeSnapshot: 0,
+    oddsBoostActive: false,
+    insuranceActive: false,
+    lastGambleCardId: null,
+    lastGambleAmount: 0,
   };
 }

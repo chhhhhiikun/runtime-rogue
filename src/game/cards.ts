@@ -36,6 +36,16 @@ export type CardId =
   | "coreDump" | "edgeCase" | "hotReload"
   // Bug Injector Fatal
   | "segmentationFault"
+  // RNG Cracker Starter
+  | "rcAttack" | "rcBlock" | "skipRoll"
+  // RNG Cracker Common
+  | "doubleDown" | "riskyGuard" | "insurance" | "retryRoll" | "oddsBoost"
+  // RNG Cracker Uncommon
+  | "forceSeed" | "chainRoll" | "fortifyBet"
+  // RNG Cracker Rare
+  | "jackpot" | "seedLock" | "martingale"
+  // RNG Cracker Fatal
+  | "allIn"
   // チュートリアル専用（数値固定・コンボ計算なし。本編の報酬プールには含めない）
   | "tutorialAttack" | "tutorialBlock" | "tutorialBurst" | "tutorialRecover";
 
@@ -435,6 +445,106 @@ export const CARDS: Record<CardId, CardDef> = {
     rarity: "fatal", attributes: ["unique"],
   },
 
+  // ─── RNG Cracker Starter ────────────────────────────────────────
+  rcAttack: {
+    id: "rcAttack", fn: "attack",
+    signature: "attack()",
+    description: "50%で敵に8ダメージ、50%で2ダメージ（平均5）。コスト: 2",
+    rarity: "starter", attributes: [],
+  },
+  rcBlock: {
+    id: "rcBlock", fn: "block",
+    signature: "block()",
+    description: "50%でブロック+9、50%で+3（平均6）。コスト: 2",
+    rarity: "starter", attributes: [],
+  },
+  skipRoll: {
+    id: "skipRoll", fn: "skipRoll",
+    signature: "skipRoll()",
+    description: "内部seedを1つ空費して進める（効果なし）。コスト: 1",
+    rarity: "starter", attributes: [],
+  },
+
+  // ─── RNG Cracker Common ──────────────────────────────────────────
+  doubleDown: {
+    id: "doubleDown", fn: "doubleDown",
+    signature: "doubleDown()",
+    description: "40%で敵に18ダメージ、60%で4ダメージ。コスト: 3",
+    rarity: "common", attributes: [],
+  },
+  riskyGuard: {
+    id: "riskyGuard", fn: "riskyGuard",
+    signature: "riskyGuard()",
+    description: "40%でブロック+20、60%で+5。コスト: 3",
+    rarity: "common", attributes: [],
+  },
+  insurance: {
+    id: "insurance", fn: "insurance",
+    signature: "insurance()",
+    description: "次に使うギャンブル系カードが外れた時のペナルティを1回分軽減する。コスト: 1",
+    rarity: "common", attributes: [],
+  },
+  retryRoll: {
+    id: "retryRoll", fn: "retryRoll",
+    signature: "retryRoll()",
+    description: "直前のギャンブル系カードの結果を無効化し、次のseedで撃ち直す。コスト: 1",
+    rarity: "common", attributes: [],
+  },
+  oddsBoost: {
+    id: "oddsBoost", fn: "oddsBoost",
+    signature: "oddsBoost()",
+    description: "次の1回だけ、ギャンブル系カードの成功ラインを+20%有利にする。コスト: 2",
+    rarity: "common", attributes: [],
+  },
+
+  // ─── RNG Cracker Uncommon ─────────────────────────────────────────
+  forceSeed: {
+    id: "forceSeed", fn: "forceSeed",
+    signature: "forceSeed(${1:n})",
+    description: "内部seedを指定した値に上書きする（次の出目を完全にコントロール）。コスト: 4",
+    rarity: "uncommon", attributes: [],
+  },
+  chainRoll: {
+    id: "chainRoll", fn: "chainRoll",
+    signature: "chainRoll()",
+    description: "seedを2つ連続消費。両方成功なら敵に28ダメージ、いずれか失敗なら8ダメージ。コスト: 3",
+    rarity: "uncommon", attributes: [],
+  },
+  fortifyBet: {
+    id: "fortifyBet", fn: "fortifyBet",
+    signature: "fortifyBet()",
+    description: "seedを2つ連続消費。両方成功ならブロック+32、いずれか失敗なら+10。コスト: 3",
+    rarity: "uncommon", attributes: [],
+  },
+
+  // ─── RNG Cracker Rare ─────────────────────────────────────────────
+  jackpot: {
+    id: "jackpot", fn: "jackpot",
+    signature: "jackpot()",
+    description: "25%で敵に50ダメージ、外れなら自分に4ダメージ。コスト: 4",
+    rarity: "rare", attributes: [],
+  },
+  seedLock: {
+    id: "seedLock", fn: "seedLock",
+    signature: "seedLock()",
+    description: "3ターンの間、敵によるseed干渉ギミックを無効化する。コスト: 3",
+    rarity: "rare", attributes: [],
+  },
+  martingale: {
+    id: "martingale", fn: "martingale",
+    signature: "martingale()",
+    description: "基礎12ダメージに、直前から連続で外れたギャンブル系カードの回数×6ダメージを加算する。コスト: 3",
+    rarity: "rare", attributes: [],
+  },
+
+  // ─── RNG Cracker Fatal（最上位・排出率1%）─────────────────────────
+  allIn: {
+    id: "allIn", fn: "allIn",
+    signature: "allIn()",
+    description: "残りMain Clockを全て消費する。30%でその7倍のダメージ、外れなら効果なし。コスト: 0（動的）",
+    rarity: "fatal", attributes: [],
+  },
+
   // ─── チュートリアル専用（コンボ計算なしの固定値） ───────────────
   tutorialAttack: {
     id: "tutorialAttack", fn: "attack",
@@ -543,6 +653,26 @@ export function getCardBaseCost(id: CardId): number {
     case "hotReload": return 2;
     // BI Fatal
     case "segmentationFault": return 4;
+    // RC Starter
+    case "rcAttack": return 2;
+    case "rcBlock": return 2;
+    case "skipRoll": return 1;
+    // RC Common
+    case "doubleDown": return 3;
+    case "riskyGuard": return 3;
+    case "insurance": return 1;
+    case "retryRoll": return 1;
+    case "oddsBoost": return 2;
+    // RC Uncommon
+    case "forceSeed": return 4;
+    case "chainRoll": return 3;
+    case "fortifyBet": return 3;
+    // RC Rare
+    case "jackpot": return 4;
+    case "seedLock": return 3;
+    case "martingale": return 3;
+    // RC Fatal（動的コスト。実際の消費量はworker.ts側で残りMain Clock全消費として処理）
+    case "allIn": return 0;
     // チュートリアル専用
     case "tutorialAttack": return 1;
     case "tutorialBlock": return 1;

@@ -65,6 +65,9 @@ declare function comboIncrement(): number;
 declare function turn(): number;
 declare function storedValue(): number;
 declare function turnsSinceRelease(): number;
+declare function rngSeed(): number;
+declare function missStreak(): number;
+declare function seedLockRemaining(): number;
 declare function isUsable(fn: string): boolean;
 declare function cardCost(fn: string): number;
 declare function deploy(fn: string): void;
@@ -98,6 +101,9 @@ export const READ_ITEMS: Array<{ label: string; insert: string; detail: string; 
   { label: "sameActionStreak",    insert: "sameActionStreak()",    detail: "() → number", doc: "同じ関数を連続で呼んだ回数" },
   { label: "storedValue",         insert: "storedValue()",         detail: "() → number", doc: "Object Breakerの変数に蓄積されている値" },
   { label: "turnsSinceRelease",   insert: "turnsSinceRelease()",   detail: "() → number", doc: "release系(release/compact/bigRelease)を最後に使ってから経過したターン数" },
+  { label: "rngSeed",             insert: "rngSeed()",             detail: "() → number", doc: "RNG Crackerの内部seed（LCGで決定論的に更新される）" },
+  { label: "missStreak",          insert: "missStreak()",          detail: "() → number", doc: "直近の成功以降、ギャンブル系カードが連続で外れた回数" },
+  { label: "seedLockRemaining",   insert: "seedLockRemaining()",   detail: "() → number", doc: "seedLock()の効果があと何ターン残っているか" },
   { label: "deploy",      insert: "deploy(\"${1:attack}\")",   detail: "(fn: string) → void",    doc: "手札のカードをDaemonへ常駐化する（コスト: 基礎コスト×2をMain Clockから消費）" },
 ];
 

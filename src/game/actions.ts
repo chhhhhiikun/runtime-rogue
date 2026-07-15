@@ -54,6 +54,16 @@ export type ActionCore =
   | { kind: "weaknessAttack"; matched: boolean; dmg: number; ignoresBlock?: boolean; cost: number }
   | { kind: "weaknessBlock"; matched: boolean; amount: number; cost: number }
   | { kind: "hotReload"; cost: number }
+  // RNG Cracker actions
+  | { kind: "gambleAttack"; success: boolean; dmg: number; cost: number }
+  | { kind: "gambleBlock"; success: boolean; amount: number; cost: number }
+  | { kind: "gambleRevert"; gambleKind: "attack" | "block"; amount: number; cost: number }
+  | { kind: "skipRoll"; cost: number }
+  | { kind: "insurance"; cost: number }
+  | { kind: "retryRoll"; cost: number }
+  | { kind: "oddsBoost"; cost: number }
+  | { kind: "forceSeed"; cost: number }
+  | { kind: "seedLock"; cost: number }
   // 敵ギミックによるプレイヤーへの即時ダメージ（竜騎士「見切りの一撃」等。コストは発生しない）
   | { kind: "gimmickDamage"; amount: number; label: string }
   // 敵ギミックによる敵への即時ブロック付与（サイクロプス「単眼看破」等。コストは発生しない）
@@ -394,6 +404,44 @@ export function applyAction(
     }
     case "hotReload": {
       return "hotReload: 3枚ドロー、このターンの手札コスト-1";
+    }
+
+    // ── RNG Cracker ─────────────────────────────────────────────────
+    case "gambleAttack": {
+      const raw   = vulnDmg(s, a.dmg);
+      const dealt = damageEnemy(s, raw);
+      return a.success ? `🎰 成功！ 敵に ${dealt} ダメージ` : `外れ… 敵に ${dealt} ダメージ`;
+    }
+    case "gambleBlock": {
+      s.player.block += a.amount;
+      return a.success ? `🎰 成功！ ブロック +${a.amount}` : `外れ… ブロック +${a.amount}`;
+    }
+    case "gambleRevert": {
+      // retryRoll(): 直前のギャンブル結果を打ち消す（簡易実装。ブロック吸収分の巻き戻しはしない）
+      if (a.gambleKind === "attack") {
+        s.enemy.hp = Math.min(s.enemy.maxHp, s.enemy.hp + a.amount);
+      } else {
+        s.player.block = Math.max(0, s.player.block - a.amount);
+      }
+      return "retryRoll: 直前の結果を打ち消した";
+    }
+    case "skipRoll": {
+      return "skipRoll: seedを1つ進めた";
+    }
+    case "insurance": {
+      return "insurance: 次のギャンブル外れのペナルティを軽減する";
+    }
+    case "retryRoll": {
+      return "retryRoll: 直前のギャンブル結果を撃ち直す";
+    }
+    case "oddsBoost": {
+      return "oddsBoost: 次のギャンブルの成功ラインを有利にする";
+    }
+    case "forceSeed": {
+      return "forceSeed: seedを上書きした";
+    }
+    case "seedLock": {
+      return "seedLock: 敵のseed干渉ギミックを一時的に無効化する";
     }
   }
 }

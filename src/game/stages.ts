@@ -42,6 +42,17 @@ export type WeaknessGimmick =
   // ログ肥大化（ドラゴン）: turnThresholdターンを超過すると、超過ターンごとにdebug()のログ総数がgrowthPerTurnずつ増えていく
   | { kind: "logBloat"; turnThreshold: number; growthPerTurn: number };
 
+// RNG Crackerのseed予測（決定論的LCG）を狙った、既存gimmickと並行して働く対抗ギミック。
+// 他2つと同じく、1ステージにつき最大1つ、gimmickとは独立に設定できる。
+export type RngGimmick =
+  // stream干渉（ウェアウルフ）: 敵の行動1回につき、seedがextraStepsPerAction分余分に進む
+  // （プレイヤーが敵の消費分を計算に入れないと予測がズレる）
+  | { kind: "streamInterference"; extraStepsPerAction: number }
+  // seed凍結（ゴーレム）: intervalターンごとにfreezeDurationターンの間、rngSeed()が凍結時点の古い値を返し続ける
+  | { kind: "seedFreeze"; interval: number; freezeDuration: number }
+  // 式ドリフト（ドラゴン）: turnThresholdターンを超過すると、超過ターンごとにLCGの乗数がdriftPerTurnずつ変化する
+  | { kind: "formulaDrift"; turnThreshold: number; driftPerTurn: number };
+
 export interface StageDef {
   name: string;
   hp: number;
@@ -50,6 +61,7 @@ export interface StageDef {
   gimmick?: StageGimmick;
   storedValueGimmick?: StoredValueGimmick;
   weaknessGimmick?: WeaknessGimmick;
+  rngGimmick?: RngGimmick;
   // 基準報酬（実際の獲得量はここに±ジッターを乗せた値。main.tsのjitterReward参照）。
   // チュートリアル用ステージ（tutorial.ts）は通貨を獲得しないため未指定でよい
   byteReward?: number;
@@ -129,6 +141,8 @@ export const STAGES: StageDef[] = [
     storedValueGimmick: { kind: "cap", threshold: 40 },
     // 弱点系カードを3ターン使わないと、敵HPが5回復する（Bug Injectorのdebug()軽視への牽制）
     weaknessGimmick: { kind: "unpatchedBug", idleTurns: 3, healAmount: 5 },
+    // 敵の行動1回につき、RNG Crackerの内部seedが1つ余分に進む（敵の消費分を計算に入れないと予測がズレる）
+    rngGimmick: { kind: "streamInterference", extraStepsPerAction: 1 },
   },
   {
     // 約6〜7ターン。超高火力
@@ -167,6 +181,8 @@ export const STAGES: StageDef[] = [
     gimmick: { kind: "overguard", threshold: 15 },
     // ターン終了時に自分ブロックが15以上残っていると、次ターン中は弱点系カードが強制的に不一致扱いになる（籠城への二重の牽制）
     weaknessGimmick: { kind: "defensiveCompile", blockThreshold: 15 },
+    // 5ターンごとに2ターンの間、rngSeed()が凍結時点の古い値を返し続ける（読んだつもりが古いという罠）
+    rngGimmick: { kind: "seedFreeze", interval: 5, freezeDuration: 2 },
   },
   {
     // 約9〜10ターン
@@ -246,5 +262,7 @@ export const STAGES: StageDef[] = [
     storedValueGimmick: { kind: "cap", threshold: 120 },
     // 15ターンを超えると、超過ターンごとにdebug()のログ総数が6件ずつ増えていく（覚醒と同じ閾値で足並みを揃える）
     weaknessGimmick: { kind: "logBloat", turnThreshold: 15, growthPerTurn: 6 },
+    // 15ターンを超えると、超過ターンごとにLCGの乗数が37ずつ変化する（覚えた予測式が急に通用しなくなる）
+    rngGimmick: { kind: "formulaDrift", turnThreshold: 15, driftPerTurn: 37 },
   },
 ];

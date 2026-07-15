@@ -2,7 +2,7 @@ import type { CombatState, EnemyIntent, ErrorType } from "../game/state";
 import { ERROR_TYPES } from "../game/state";
 import { applyAction, type Action } from "../game/actions";
 import { CARDS, HAND_SIZE, getCardBaseCost, type CardId } from "../game/cards";
-import type { StageGimmick, StoredValueGimmick, WeaknessGimmick } from "../game/stages";
+import type { StageGimmick, StoredValueGimmick, WeaknessGimmick, RngGimmick } from "../game/stages";
 
 // 常時ON（アンロック不要）: storedValue() turnsSinceRelease() comboCount() sameActionStreak()
 //                          daemonCost() mainClock() deploy(fn)
@@ -52,6 +52,7 @@ export interface RunRequest {
   gimmick?: StageGimmick; // ステージごとの対抗ギミック設定
   storedValueGimmick?: StoredValueGimmick; // Object Breakerのstoredvalueを狙った対抗ギミック（gimmickと並行して有効）
   weaknessGimmick?: WeaknessGimmick; // Bug Injectorのdebug()/弱点属性を狙った対抗ギミック（gimmickと並行して有効）
+  rngGimmick?: RngGimmick; // RNG Crackerのseed予測を狙った対抗ギミック（gimmickと並行して有効）
 }
 
 export interface RunResult {
@@ -896,6 +897,208 @@ function run(req: RunRequest): RunResult {
     }
   };
 
+  // ── RNG Cracker: 内部seed（LCG）と、ギャンブル系カード共通ロジック ──────
+  // seed = (seed * 乗数 + 49297) % 233280 で決定論的に更新する。
+  // 乗数はformulaDriftギミック（ドラゴン）発動中のみ、超過ターン数に応じて変化する
+  const LCG_INCREMENT = 49297;
+  const LCG_MODULUS   = 233280;
+  const lcgMultiplier = (): number => {
+    const rg = req.rngGimmick;
+    if (rg?.kind === "formulaDrift") {
+      const over = Math.max(0, state.turn - rg.turnThreshold);
+      return 9301 + over * rg.driftPerTurn;
+    }
+    return 9301;
+  };
+  const advanceSeed = (): number => {
+    state.rngSeed = (state.rngSeed * lcgMultiplier() + LCG_INCREMENT) % LCG_MODULUS;
+    return state.rngSeed;
+  };
+
+  // ギャンブル系カード共通のロール解決: seedを1つ進め、成功/失敗を判定する。
+  // oddsBoost()（次の1回だけ成功ラインを有利にする）とinsurance()（外れ時のペナルティ軽減）を消費する。
+  // missStreak（martingale用）もここで一括更新する
+  const resolveGambleRoll = (baseThreshold: number): { success: boolean; insuranceUsed: boolean } => {
+    let threshold = baseThreshold;
+    if (state.oddsBoostActive) {
+      threshold = Math.min(1, threshold + 0.2);
+      state.oddsBoostActive = false;
+    }
+    const rolled = advanceSeed() / LCG_MODULUS;
+    const success = rolled < threshold;
+    state.missStreak = success ? 0 : state.missStreak + 1;
+    const insuranceUsed = !success && state.insuranceActive;
+    if (insuranceUsed) state.insuranceActive = false;
+    return { success, insuranceUsed };
+  };
+
+  // retryRoll()で撃ち直せる、単純な二択構造のギャンブルカードの設定
+  const GAMBLE_CARD_CONFIG: Record<string, { kind: "attack" | "block"; threshold: number; successAmt: number; failAmt: number }> = {
+    rcAttack:   { kind: "attack", threshold: 0.5, successAmt: 8,  failAmt: 2 },
+    rcBlock:    { kind: "block",  threshold: 0.5, successAmt: 9,  failAmt: 3 },
+    doubleDown: { kind: "attack", threshold: 0.4, successAmt: 18, failAmt: 4 },
+    riskyGuard: { kind: "block",  threshold: 0.4, successAmt: 20, failAmt: 5 },
+  };
+
+  const gambleActionFn = (
+    cardId: CardId, kind: "attack" | "block", threshold: number,
+    successAmt: number, failAmt: number, baseCost: number,
+  ): void => {
+    checkInHand(cardId);
+    const cost = effectiveCost(cardId, baseCost);
+    const { success, insuranceUsed } = resolveGambleRoll(threshold);
+    let amount = success ? successAmt : failAmt;
+    if (insuranceUsed) amount = Math.round((successAmt + failAmt) / 2);
+    state.lastGambleCardId = cardId;
+    state.lastGambleAmount = amount;
+    const fnName = CARDS[cardId]?.fn ?? cardId;
+    if (kind === "attack") {
+      record({ kind: "gambleAttack", success, dmg: amount, cost }, `${fnName}()`);
+    } else {
+      record({ kind: "gambleBlock", success, amount, cost }, `${fnName}()`);
+    }
+    addCombo();
+    if (insuranceUsed) {
+      consoleLogs.push("[GIMMICK] 🛡 insurance発動！ 外れのペナルティを軽減した");
+    }
+  };
+
+  const rcLib: Record<string, (...args: unknown[]) => void> = {
+    skipRoll: () => {
+      checkInHand("skipRoll");
+      const cost = effectiveCost("skipRoll", 1);
+      record({ kind: "skipRoll", cost }, "skipRoll()");
+      addCombo();
+      advanceSeed();
+    },
+    doubleDown: () => gambleActionFn("doubleDown", "attack", 0.4, 18, 4, 3),
+    riskyGuard: () => gambleActionFn("riskyGuard", "block", 0.4, 20, 5, 3),
+    insurance: () => {
+      checkInHand("insurance");
+      const cost = effectiveCost("insurance", 1);
+      record({ kind: "insurance", cost }, "insurance()");
+      addCombo();
+      state.insuranceActive = true;
+    },
+    retryRoll: () => {
+      checkInHand("retryRoll");
+      const cost = effectiveCost("retryRoll", 1);
+      record({ kind: "retryRoll", cost }, "retryRoll()");
+      addCombo();
+      const cfg = state.lastGambleCardId ? GAMBLE_CARD_CONFIG[state.lastGambleCardId] : undefined;
+      if (!cfg) {
+        consoleLogs.push("[warn] retryRoll: 撃ち直せる直前のギャンブル結果がありません");
+        return;
+      }
+      // 直前の効果を打ち消す（簡易実装。ブロック吸収分の巻き戻しはしない）
+      const revertAction: Action = { kind: "gambleRevert", gambleKind: cfg.kind, amount: state.lastGambleAmount, cost: 0 };
+      applyAction(state, revertAction);
+      actions.push(revertAction);
+      // 新しいseedで撃ち直す
+      const { success } = resolveGambleRoll(cfg.threshold);
+      const amount = success ? cfg.successAmt : cfg.failAmt;
+      state.lastGambleAmount = amount;
+      const rerollAction: Action = cfg.kind === "attack"
+        ? { kind: "gambleAttack", success, dmg: amount, cost: 0 }
+        : { kind: "gambleBlock", success, amount, cost: 0 };
+      applyAction(state, rerollAction);
+      actions.push(rerollAction);
+    },
+    oddsBoost: () => {
+      checkInHand("oddsBoost");
+      const cost = effectiveCost("oddsBoost", 2);
+      record({ kind: "oddsBoost", cost }, "oddsBoost()");
+      addCombo();
+      state.oddsBoostActive = true;
+    },
+    forceSeed: (n) => {
+      checkInHand("forceSeed");
+      const cost = effectiveCost("forceSeed", 4);
+      const value = Math.max(0, Math.min(LCG_MODULUS - 1, Math.floor(Number(n) || 0)));
+      record({ kind: "forceSeed", cost }, `forceSeed(${value})`);
+      addCombo();
+      state.rngSeed = value;
+    },
+    chainRoll: () => {
+      checkInHand("chainRoll");
+      const cost = effectiveCost("chainRoll", 3);
+      const r1 = resolveGambleRoll(0.5);
+      const r2 = resolveGambleRoll(0.5);
+      const success = r1.success && r2.success;
+      const dmg = success ? 28 : 8;
+      state.lastGambleCardId = null; // 2連続ロールはretryRoll非対応
+      record({ kind: "gambleAttack", success, dmg, cost }, "chainRoll()");
+      addCombo();
+    },
+    fortifyBet: () => {
+      checkInHand("fortifyBet");
+      const cost = effectiveCost("fortifyBet", 3);
+      const r1 = resolveGambleRoll(0.5);
+      const r2 = resolveGambleRoll(0.5);
+      const success = r1.success && r2.success;
+      const amount = success ? 32 : 10;
+      state.lastGambleCardId = null; // 2連続ロールはretryRoll非対応
+      record({ kind: "gambleBlock", success, amount, cost }, "fortifyBet()");
+      addCombo();
+    },
+    jackpot: () => {
+      checkInHand("jackpot");
+      const cost = effectiveCost("jackpot", 4);
+      const { success } = resolveGambleRoll(0.25);
+      const dmg = success ? 50 : 0;
+      state.lastGambleCardId = null; // 外れ時の効果がattack/block共通構造でないためretryRoll非対応
+      record({ kind: "gambleAttack", success, dmg, cost }, "jackpot()");
+      addCombo();
+      if (!success) {
+        const selfDmgAction: Action = { kind: "gimmickDamage", amount: 4, label: "jackpot: 外れて自分に4ダメージ" };
+        applyAction(state, selfDmgAction);
+        actions.push(selfDmgAction);
+      }
+    },
+    seedLock: () => {
+      checkInHand("seedLock");
+      const cost = effectiveCost("seedLock", 3);
+      record({ kind: "seedLock", cost }, "seedLock()");
+      addCombo();
+      state.seedLockRemaining = 3;
+    },
+    martingale: () => {
+      checkInHand("martingale");
+      const cost = effectiveCost("martingale", 3);
+      const dmg = 12 + state.missStreak * 6;
+      state.lastGambleCardId = null; // 確定効果のためretryRoll対象外
+      record({ kind: "gambleAttack", success: true, dmg, cost }, "martingale()");
+      addCombo();
+      state.missStreak = 0;
+    },
+    allIn: () => {
+      checkInHand("allIn");
+      const bet = state.energy;
+      const { success } = resolveGambleRoll(0.3);
+      const dmg = success ? bet * 7 : 0;
+      state.lastGambleCardId = null; // 動的コストのためretryRoll対象外
+      record({ kind: "gambleAttack", success, dmg, cost: bet }, "allIn()");
+      addCombo();
+    },
+  };
+
+  // RC attack/block overrides（コンボ非依存の乱数ペイアウト）
+  const rcAttackFn = (): void => {
+    if (availableSource().includes("rcAttack")) {
+      gambleActionFn("rcAttack", "attack", 0.5, 8, 2, 2);
+    } else {
+      legacyLib.attack!(0);
+    }
+  };
+
+  const rcBlockFn = (): void => {
+    if (availableSource().includes("rcBlock")) {
+      gambleActionFn("rcBlock", "block", 0.5, 9, 3, 2);
+    } else {
+      legacyLib.block!(0);
+    }
+  };
+
   const toFnNames = (ids: CardId[]) => ids.map(id => CARDS[id]?.fn ?? id);
 
   // 常時ON（アンロック不要）
@@ -906,6 +1109,16 @@ function run(req: RunRequest): RunResult {
     sameActionStreak:  () => state.sameActionStreak,
     storedValue:       () => state.storedValue,
     turnsSinceRelease: () => state.turnsSinceRelease,
+    rngSeed: () => {
+      const rg = req.rngGimmick;
+      if (rg?.kind === "seedFreeze") {
+        const cyclePos = (state.turn - 1) % rg.interval;
+        if (cyclePos < rg.freezeDuration) return state.rngSeedFreezeSnapshot;
+      }
+      return state.rngSeed;
+    },
+    missStreak:        () => state.missStreak,
+    seedLockRemaining: () => state.seedLockRemaining,
   };
 
   // 個別にアンロックする関数
@@ -1074,6 +1287,25 @@ function run(req: RunRequest): RunResult {
       }
       state.usedWeaknessCardThisTurn = false;
       state.matchedHitsThisTurn = 0;
+
+      // RNG Cracker: rngGimmickのターン境界処理
+      const rngGimmick = req.rngGimmick;
+      if (rngGimmick?.kind === "streamInterference" && state.seedLockRemaining <= 0) {
+        for (let i = 0; i < rngGimmick.extraStepsPerAction; i++) advanceSeed();
+        consoleLogs.push(`[GIMMICK] ⚠ stream干渉！ 敵の行動でseedが${rngGimmick.extraStepsPerAction}つ余分に進んだ`);
+      }
+      if (rngGimmick?.kind === "seedFreeze") {
+        // 次に迎えるターンが凍結サイクルの先頭なら、その時点のseedをスナップショットする
+        const nextTurnNumber = state.turn + 1;
+        const cyclePos = (nextTurnNumber - 1) % rngGimmick.interval;
+        if (cyclePos === 0) {
+          state.rngSeedFreezeSnapshot = state.rngSeed;
+        }
+      }
+      if (state.seedLockRemaining > 0) state.seedLockRemaining--;
+      state.oddsBoostActive = false;
+      state.insuranceActive = false;
+      state.lastGambleCardId = null;
 
       // Bug Injectorの弱点属性は、全ステージ共通で毎ターンランダムに再抽選する（ドラゴン限定ではない）。
       // 3種から弱点を1つ選び、残り2種から対極を選ぶ（常に異なる値になる）
@@ -1269,6 +1501,10 @@ function run(req: RunRequest): RunResult {
           daemonApiNames.push("attack"); daemonApiValues.push(biAttackFn);
         } else if (id === "biBlock") {
           daemonApiNames.push("block"); daemonApiValues.push(biBlockFn);
+        } else if (id === "rcAttack") {
+          daemonApiNames.push("attack"); daemonApiValues.push(rcAttackFn);
+        } else if (id === "rcBlock") {
+          daemonApiNames.push("block"); daemonApiValues.push(rcBlockFn);
         } else if (fnName === "attack") {
           daemonApiNames.push("attack"); daemonApiValues.push(legacyLib["attack"]);
         } else if (fnName === "block") {
@@ -1281,6 +1517,8 @@ function run(req: RunRequest): RunResult {
           daemonApiNames.push(fnName); daemonApiValues.push(obLib[fnName]);
         } else if (biLib[fnName]) {
           daemonApiNames.push(fnName); daemonApiValues.push(biLib[fnName]);
+        } else if (rcLib[fnName]) {
+          daemonApiNames.push(fnName); daemonApiValues.push(rcLib[fnName]);
         } else if (tutorialLib[fnName]) {
           daemonApiNames.push(fnName); daemonApiValues.push(tutorialLib[fnName]);
         } else if (legacyLib[fnName]) {
@@ -1360,6 +1598,12 @@ function run(req: RunRequest): RunResult {
       } else if (id === "biBlock") {
         apiNames.push("block");
         apiValues.push(biBlockFn);
+      } else if (id === "rcAttack") {
+        apiNames.push("attack");
+        apiValues.push(rcAttackFn);
+      } else if (id === "rcBlock") {
+        apiNames.push("block");
+        apiValues.push(rcBlockFn);
       } else if (fnName === "attack") {
         apiNames.push("attack");
         apiValues.push(legacyLib["attack"]);
@@ -1379,6 +1623,9 @@ function run(req: RunRequest): RunResult {
       } else if (biLib[fnName]) {
         apiNames.push(fnName);
         apiValues.push(biLib[fnName]);
+      } else if (rcLib[fnName]) {
+        apiNames.push(fnName);
+        apiValues.push(rcLib[fnName]);
       } else if (tutorialLib[fnName]) {
         apiNames.push(fnName);
         apiValues.push(tutorialLib[fnName]);

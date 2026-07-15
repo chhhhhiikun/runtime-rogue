@@ -62,10 +62,15 @@ export const CHARACTERS: CharacterDef[] = [
     name: "RNG Cracker",
     emoji: "🎲",
     hp: 40,
-    starterDeck: [],
-    cardPool: { common: [], uncommon: [], rare: [], fatal: [] },
+    starterDeck: ["rcAttack", "rcBlock", "skipRoll"],
+    cardPool: {
+      common: ["doubleDown", "riskyGuard", "insurance", "retryRoll", "oddsBoost"],
+      uncommon: ["forceSeed", "chainRoll", "fortifyBet"],
+      rare: ["jackpot", "seedLock", "martingale"],
+      fatal: ["allIn"],
+    },
     concept: "Math.random() によるギャンブルカードを確率ハック関数で制御する。",
-    available: false,
+    available: true,
   },
 ];
 
