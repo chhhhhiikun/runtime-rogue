@@ -1,6 +1,10 @@
 import type { CombatState, EnemyIntent } from "./state";
 import type { CardId } from "./cards";
 
+// Bug Injector: 弱点系カードの結果は、record()時点でmatched/dmg/amountを確定させてからactionに詰める
+// （applyActionは純粋な再生関数であり、req.weaknessGimmick等の追加情報を持たないため。
+//  matched判定・ギミックによる上書きはすべてworker.ts側のカード関数で完結させる）
+
 export type ActionCore =
   // Legacy actions
   | { kind: "attack";    amount: number; cost: number }
@@ -45,6 +49,11 @@ export type ActionCore =
   | { kind: "surge"; cost: number }
   | { kind: "bigRelease"; cost: number }
   | { kind: "singularity"; cost: number }
+  // Bug Injector actions
+  | { kind: "debug"; cost: number }
+  | { kind: "weaknessAttack"; matched: boolean; dmg: number; ignoresBlock?: boolean; cost: number }
+  | { kind: "weaknessBlock"; matched: boolean; amount: number; cost: number }
+  | { kind: "hotReload"; cost: number }
   // 敵ギミックによるプレイヤーへの即時ダメージ（竜騎士「見切りの一撃」等。コストは発生しない）
   | { kind: "gimmickDamage"; amount: number; label: string }
   // 敵ギミックによる敵への即時ブロック付与（サイクロプス「単眼看破」等。コストは発生しない）
@@ -360,6 +369,31 @@ export function applyAction(
     case "singularity": {
       s.storedValue = s.storedValue * 3 + 10;
       return `singularity: 変数を3倍+10に（${s.storedValue}）`;
+    }
+
+    // ── Bug Injector ──────────────────────────────────────────────
+    case "debug": {
+      return "debug: 敵のエラーログを取得した";
+    }
+    case "weaknessAttack": {
+      let dealt: number;
+      if (a.ignoresBlock) {
+        const raw = vulnDmg(s, a.dmg);
+        s.enemy.hp = Math.max(0, s.enemy.hp - raw);
+        s.damageDealtThisTurn += raw;
+        dealt = raw;
+      } else {
+        const raw = vulnDmg(s, a.dmg);
+        dealt = damageEnemy(s, raw);
+      }
+      return a.matched ? `🎯 弱点直撃！ 敵に ${dealt} ダメージ` : `敵に ${dealt} ダメージ`;
+    }
+    case "weaknessBlock": {
+      s.player.block += a.amount;
+      return a.matched ? `🎯 弱点防御！ ブロック +${a.amount}` : `ブロック +${a.amount}`;
+    }
+    case "hotReload": {
+      return "hotReload: 3枚ドロー、このターンの手札コスト-1";
     }
   }
 }

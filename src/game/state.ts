@@ -1,5 +1,9 @@
 // 戦闘状態の型と初期化。worker / main 両方が import する純粋データ。
 
+// Bug Injector専用: debug()が出すエラーログの3種類
+export type ErrorType = "TypeError" | "RangeError" | "SyntaxError";
+export const ERROR_TYPES: ErrorType[] = ["TypeError", "RangeError", "SyntaxError"];
+
 export interface EnemyIntent {
   kind: "attack" | "block";
   value: number;
@@ -16,6 +20,8 @@ export interface CombatState {
     vulnerable: number; // >0 の間、被ダメ +50%（ターン終了でリセット）
     poison: number; // ターン終了時に hp へダメージ
     intent: EnemyIntent; // 次に行う行動（予告）
+    weakness: ErrorType;     // Bug Injector戦: 現在の弱点属性（debug()ログで最多出現）
+    edgeWeakness: ErrorType; // Bug Injector戦: 現在の対極属性（debug()ログで最少出現。weaknessと必ず異なる）
   };
   energy: number;
   maxEnergy: number;
@@ -40,6 +46,12 @@ export interface CombatState {
   storedValue: number;           // Object Breaker: 蓄積された値。ターンをまたいでリセットされない（戦闘開始時のみ0）
   turnsSinceRelease: number;     // release系(release/compact/bigRelease)を最後に使ってから経過したターン数（GCギミック用）
   releasedThisTurn: boolean;     // このターン中にrelease系を使ったか（ターン境界でturnsSinceReleaseに反映）
+  // Bug Injector: weaknessGimmick用の状態
+  turnsSinceWeaknessCardUsed: number; // 弱点系カードを最後に使ってから経過したターン数（未対応のバグギミック用）
+  usedWeaknessCardThisTurn: boolean;  // このターン中に弱点系カードを使ったか（ターン境界でturnsSinceWeaknessCardUsedに反映）
+  matchedHitsThisTurn: number;        // このターン中に弱点が真に一致した回数（例外耐性ギミック用。ターン境界でリセット）
+  weaknessDisabledThisTurn: boolean;  // trueの間、弱点系カードは強制的に不一致扱いになる（防御的コンパイルギミック用）
+  weaknessCardUseCount: Record<string, number>; // 弱点系カードごとの戦闘通算使用回数（サイレントキャッチギミック用）
 }
 
 export const MAX_ENERGY = 10;
@@ -55,6 +67,8 @@ export function initialState(): CombatState {
       vulnerable: 0,
       poison: 0,
       intent: { kind: "attack", value: 7 },
+      weakness: "TypeError",
+      edgeWeakness: "SyntaxError",
     },
     energy: MAX_ENERGY,
     maxEnergy: MAX_ENERGY,
@@ -79,5 +93,10 @@ export function initialState(): CombatState {
     storedValue: 0,
     turnsSinceRelease: 0,
     releasedThisTurn: false,
+    turnsSinceWeaknessCardUsed: 0,
+    usedWeaknessCardThisTurn: false,
+    matchedHitsThisTurn: 0,
+    weaknessDisabledThisTurn: false,
+    weaknessCardUseCount: {},
   };
 }

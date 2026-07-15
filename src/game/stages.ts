@@ -28,6 +28,20 @@ export type StoredValueGimmick =
   // 以降そのままの間、毎ターン decayRate 分だけ減衰し続ける
   | { kind: "decay"; staleThreshold: number; decayRate: number };
 
+// Bug Injectorのdebug()/弱点属性システムを狙った、既存gimmickと並行して働く対抗ギミック。
+// storedValueGimmickと同じく、1ステージにつき最大1つ、gimmickとは独立に設定できる。
+export type WeaknessGimmick =
+  // 未対応のバグ（ウェアウルフ）: 弱点系カードをidleTurnsターン連続で使わないと、敵HPがhealAmount回復する
+  | { kind: "unpatchedBug"; idleTurns: number; healAmount: number }
+  // 例外耐性（サイクロプス）: 同一ターン中にmatchThreshold回目の真の弱点一致が発生すると、それ以降は不一致扱いになる
+  | { kind: "exceptionImmunity"; matchThreshold: number }
+  // 防御的コンパイル（ゴーレム）: ターン終了時に自分ブロックがblockThreshold以上残っていると、次ターン中は弱点系カードが強制的に不一致扱いになる
+  | { kind: "defensiveCompile"; blockThreshold: number }
+  // サイレントキャッチ（デーモン）: 同じ弱点系カードをuseThreshold回使うと、それ以降そのカードは無効化される
+  | { kind: "silentCatch"; useThreshold: number }
+  // ログ肥大化（ドラゴン）: turnThresholdターンを超過すると、超過ターンごとにdebug()のログ総数がgrowthPerTurnずつ増えていく
+  | { kind: "logBloat"; turnThreshold: number; growthPerTurn: number };
+
 export interface StageDef {
   name: string;
   hp: number;
@@ -35,6 +49,7 @@ export interface StageDef {
   isBoss?: boolean;
   gimmick?: StageGimmick;
   storedValueGimmick?: StoredValueGimmick;
+  weaknessGimmick?: WeaknessGimmick;
   // 基準報酬（実際の獲得量はここに±ジッターを乗せた値。main.tsのjitterReward参照）。
   // チュートリアル用ステージ（tutorial.ts）は通貨を獲得しないため未指定でよい
   byteReward?: number;
@@ -112,6 +127,8 @@ export const STAGES: StageDef[] = [
     gimmick: { kind: "overkill", threshold: 30, multiplier: 2 },
     // storedValueが40を超えると超過分は噛み千切られる（Object Breakerの貯め込みへの牽制）
     storedValueGimmick: { kind: "cap", threshold: 40 },
+    // 弱点系カードを3ターン使わないと、敵HPが5回復する（Bug Injectorのdebug()軽視への牽制）
+    weaknessGimmick: { kind: "unpatchedBug", idleTurns: 3, healAmount: 5 },
   },
   {
     // 約6〜7ターン。超高火力
@@ -130,6 +147,8 @@ export const STAGES: StageDef[] = [
     gimmick: { kind: "monotony", streakThreshold: 4, blockGain: 8 },
     // storedValueが55を超えると超過分は即座に切り捨てられる
     storedValueGimmick: { kind: "cap", threshold: 55 },
+    // 同一ターン中に3回目の弱点一致が発生すると、それ以降は不一致扱いになる（弱点連打の牽制）
+    weaknessGimmick: { kind: "exceptionImmunity", matchThreshold: 3 },
   },
   {
     // 約8ターン。重ブロック主体
@@ -146,6 +165,8 @@ export const STAGES: StageDef[] = [
     ],
     // ターン終了時に自分ブロックが15以上残っていると、次の敵攻撃はブロックを無視する（過剰な籠城への牽制）
     gimmick: { kind: "overguard", threshold: 15 },
+    // ターン終了時に自分ブロックが15以上残っていると、次ターン中は弱点系カードが強制的に不一致扱いになる（籠城への二重の牽制）
+    weaknessGimmick: { kind: "defensiveCompile", blockThreshold: 15 },
   },
   {
     // 約9〜10ターン
@@ -182,6 +203,8 @@ export const STAGES: StageDef[] = [
     gimmick: { kind: "burstSpike", threshold: 25, multiplier: 1.5 },
     // storedValueが85を超えると超過分は即座に切り捨てられる
     storedValueGimmick: { kind: "cap", threshold: 85 },
+    // 同じ弱点系カードを4回使うと、5回目以降そのカードは無効化される（1枚への依存の牽制）
+    weaknessGimmick: { kind: "silentCatch", useThreshold: 4 },
   },
   {
     // 約13ターン。攻防バランス型
@@ -221,5 +244,7 @@ export const STAGES: StageDef[] = [
     gimmick: { kind: "enrage", turnThreshold: 15, multiplierPerTurn: 0.08, comboIncrementDecay: 0.3 },
     // storedValueが120を超えると超過分は即座に切り捨てられる
     storedValueGimmick: { kind: "cap", threshold: 120 },
+    // 15ターンを超えると、超過ターンごとにdebug()のログ総数が6件ずつ増えていく（覚醒と同じ閾値で足並みを揃える）
+    weaknessGimmick: { kind: "logBloat", turnThreshold: 15, growthPerTurn: 6 },
   },
 ];

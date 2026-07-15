@@ -66,6 +66,7 @@ declare function turn(): number;
 declare function storedValue(): number;
 declare function turnsSinceRelease(): number;
 declare function isUsable(fn: string): boolean;
+declare function cardCost(fn: string): number;
 declare function deploy(fn: string): void;
 declare function myHand(): string[];
 declare function myDeck(): string[];
@@ -85,6 +86,7 @@ let _getUnlocks: () => UnlockFunctions = () => ({
   damageDealtThisTurn: false, comboIncrement: false, turn: false,
   endTurn: false, enemyIntent: false, isUsable: false,
   myDeck: false, myHand: false, myDrawPile: false, myDiscard: false, myDeployed: false,
+  cardCost: false,
 });
 let _providerRegistered = false;
 
@@ -117,6 +119,7 @@ export const UNLOCKABLE_ITEMS: Array<{ label: string; insert: string; detail: st
   { label: "myDrawPile", insert: "myDrawPile()", detail: "() → CardId[]", doc: "山札（ドロー待ちカード）", key: "myDrawPile", byteCost: 8000 },
   { label: "myDiscard",  insert: "myDiscard()",  detail: "() → CardId[]", doc: "捨て札", key: "myDiscard", byteCost: 2000 },
   { label: "myDeployed", insert: "myDeployed()", detail: "() → CardId[]", doc: "Daemonにデプロイ済みのカード", key: "myDeployed", byteCost: 4000 },
+  { label: "cardCost", insert: "cardCost(\"${1:attack}\")", detail: "(fn: string) → number", doc: "そのカードの現在のコスト（割引反映後）", key: "cardCost", byteCost: 4000 },
 ];
 
 function ensureProvider(): void {

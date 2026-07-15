@@ -2,10 +2,10 @@ import "./styles.css";
 
 import * as monaco from "monaco-editor";
 import { type MonacoEditor, createEditor, getCode, setCode, insertText, colorizeCode, READ_ITEMS, UNLOCKABLE_ITEMS } from "./ui/editor";
-import { MAX_ENERGY, MAX_DAEMON_COST, type CombatState } from "./game/state";
+import { MAX_ENERGY, MAX_DAEMON_COST, ERROR_TYPES, type CombatState, type ErrorType } from "./game/state";
 import { HAND_SIZE, CARDS, getCardBaseCost, type CardId } from "./game/cards";
 import { CHARACTERS, getCharacter, getAllCharacterCards, type CharacterDef } from "./game/characters";
-import { STAGES, type StageDef, type StageGimmick, type StoredValueGimmick } from "./game/stages";
+import { STAGES, type StageDef, type StageGimmick, type StoredValueGimmick, type WeaknessGimmick } from "./game/stages";
 import { TUTORIAL_STEPS, TUTORIAL_COMPLETE_OVERLAY, TUTORIAL_COMPLETE_LOG } from "./game/tutorial";
 import { LESSONS, type LessonDef } from "./game/lessons";
 import { Deck } from "./game/deck";
@@ -588,6 +588,7 @@ function renderPresetList(): void {
     </div>
   `;
   blankRow.querySelector(".preset-apply-btn")!.addEventListener("click", () => {
+    if (!confirm("デフォルト（空の状態）を適用しますか？（保存していないエディタ情報は破棄されます）")) return;
     applyBlankPreset();
     closePresetModal();
   });
@@ -612,12 +613,19 @@ function renderPresetList(): void {
       </div>
       <div class="preset-row-actions">
         <button class="widget-btn primary preset-apply-btn">適用</button>
+        <button class="widget-btn preset-overwrite-btn">保存</button>
         <button class="widget-btn danger preset-delete-btn">削除</button>
       </div>
     `;
     row.querySelector(".preset-apply-btn")!.addEventListener("click", () => {
+      if (!confirm(`「${preset.name}」を適用しますか？（保存していないエディタ情報は破棄されます）`)) return;
       applyPreset(preset);
       closePresetModal();
+    });
+    row.querySelector(".preset-overwrite-btn")!.addEventListener("click", () => {
+      if (!confirm(`「${preset.name}」を現在の内容で上書き保存しますか？`)) return;
+      saveCurrentAsPreset(preset.name);
+      renderPresetList();
     });
     row.querySelector(".preset-delete-btn")!.addEventListener("click", () => {
       if (confirm(`「${preset.name}」を削除しますか？`)) {
@@ -1274,9 +1282,18 @@ function getDisabledCards(): Set<CardId> | undefined {
   if (!state) return undefined;
   const s = new Set<CardId>();
   if (state.rebootUsedThisTurn) s.add("reboot");
-  // Add uniqueUsedThisTurn cards
+  // Unique: 手札にある枚数分すべて使い切った場合のみ無効表示にする（1枚使っても残りがあれば引き続き使える）
+  const handCounts = new Map<CardId, number>();
+  for (const id of deck?.hand ?? []) {
+    handCounts.set(id, (handCounts.get(id) ?? 0) + 1);
+  }
+  const usedCounts = new Map<CardId, number>();
   for (const id of state.uniqueUsedThisTurn) {
-    s.add(id as CardId);
+    const cid = id as CardId;
+    usedCounts.set(cid, (usedCounts.get(cid) ?? 0) + 1);
+  }
+  for (const [id, usedCount] of usedCounts) {
+    if (usedCount >= (handCounts.get(id) ?? 0)) s.add(id);
   }
   return s.size > 0 ? s : undefined;
 }
@@ -1312,6 +1329,7 @@ const TUTORIAL_INITIAL_UNLOCKS: UnlockFunctions = {
   damageDealtThisTurn: false, comboIncrement: false, turn: false,
   endTurn: true, enemyIntent: false, isUsable: false,
   myDeck: false, myHand: false, myDrawPile: false, myDiscard: false, myDeployed: false,
+  cardCost: false,
 };
 
 let devUnlocks: UnlockFunctions = { ...DEFAULT_UNLOCKS };
@@ -1787,6 +1805,21 @@ function describeStoredValueGimmick(g: StoredValueGimmick): string {
   }
 }
 
+function describeWeaknessGimmick(g: WeaknessGimmick): string {
+  switch (g.kind) {
+    case "unpatchedBug":
+      return `未対応のバグ: 弱点系カードを${g.idleTurns}ターン連続で使わないと、敵HPが${g.healAmount}回復する`;
+    case "exceptionImmunity":
+      return `例外耐性: 同じターン中に弱点一致が${g.matchThreshold}回発生すると、それ以降は不一致扱いになる`;
+    case "defensiveCompile":
+      return `防御的コンパイル: ターン終了時に自分のブロックが${g.blockThreshold}以上残っていると、次ターンは弱点系カードが強制的に不一致扱いになる`;
+    case "silentCatch":
+      return `サイレントキャッチ: 同じ弱点系カードを${g.useThreshold}回使うと、それ以降そのカードは無効化される`;
+    case "logBloat":
+      return `ログ肥大化: ${g.turnThreshold}ターンを超えると、超過ターンごとにdebug()のログ総数が${g.growthPerTurn}件ずつ増えていく`;
+  }
+}
+
 async function startBattle(): Promise<void> {
   // 二重クリック等で短時間に複数回呼ばれても、実際の戦闘開始処理は1回しか走らせない
   if (startingBattle) return;
@@ -1796,6 +1829,15 @@ async function startBattle(): Promise<void> {
   } finally {
     startingBattle = false;
   }
+}
+
+// Bug Injectorの弱点属性は全ステージ共通で毎ターンランダムに再抽選される（worker.ts側のendTurn処理と同じロジック）。
+// ここでは戦闘開始時（ターン1）の初期値を決める
+function rollWeakness(): { weakness: ErrorType; edgeWeakness: ErrorType } {
+  const weakness = ERROR_TYPES[Math.floor(Math.random() * ERROR_TYPES.length)];
+  const remaining = ERROR_TYPES.filter(t => t !== weakness);
+  const edgeWeakness = remaining[Math.floor(Math.random() * remaining.length)];
+  return { weakness, edgeWeakness };
 }
 
 async function startBattleInner(): Promise<void> {
@@ -1812,6 +1854,7 @@ async function startBattleInner(): Promise<void> {
       vulnerable: 0,
       poison:     0,
       intent:     { ...firstIntent },
+      ...rollWeakness(),
     },
     energy:    MAX_ENERGY,
     maxEnergy: MAX_ENERGY,
@@ -1836,6 +1879,11 @@ async function startBattleInner(): Promise<void> {
     storedValue: 0,
     turnsSinceRelease: 0,
     releasedThisTurn: false,
+    turnsSinceWeaknessCardUsed: 0,
+    usedWeaknessCardThisTurn: false,
+    matchedHitsThisTurn: 0,
+    weaknessDisabledThisTurn: false,
+    weaknessCardUseCount: {},
   };
   deck = new Deck([...deckCards]);
   over = false;
@@ -1857,6 +1905,9 @@ async function startBattleInner(): Promise<void> {
   }
   if (stage.storedValueGimmick) {
     appendLog(`⚙ ギミック: ${describeStoredValueGimmick(stage.storedValueGimmick)}`, "sys");
+  }
+  if (stage.weaknessGimmick) {
+    appendLog(`⚙ ギミック: ${describeWeaknessGimmick(stage.weaknessGimmick)}`, "sys");
   }
   entries.forEach(e => { e.errorEl.textContent = ""; });
 
@@ -1880,7 +1931,7 @@ async function startBattleInner(): Promise<void> {
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
-    undefined, !tutorialDaemonLocked(), stage.gimmick, stage.storedValueGimmick,
+    undefined, !tutorialDaemonLocked(), stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick,
   );
   await processRunResult(result);
 }
@@ -2002,6 +2053,14 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
     state.storedValue          = result.finalState.storedValue;
     state.turnsSinceRelease    = result.finalState.turnsSinceRelease;
     state.releasedThisTurn     = result.finalState.releasedThisTurn;
+    // Bug Injector: weaknessGimmick用の状態も同様にワーカー内でのみ更新されるため同期する
+    state.enemy.weakness             = result.finalState.enemy.weakness;
+    state.enemy.edgeWeakness         = result.finalState.enemy.edgeWeakness;
+    state.turnsSinceWeaknessCardUsed = result.finalState.turnsSinceWeaknessCardUsed;
+    state.usedWeaknessCardThisTurn   = result.finalState.usedWeaknessCardThisTurn;
+    state.matchedHitsThisTurn        = result.finalState.matchedHitsThisTurn;
+    state.weaknessDisabledThisTurn   = result.finalState.weaknessDisabledThisTurn;
+    state.weaknessCardUseCount       = result.finalState.weaknessCardUseCount;
   }
 
   updateDaemonDisplay();
@@ -2085,7 +2144,7 @@ async function onRun(entry: EditorEntry): Promise<void> {
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
-    allowedFns, false, stage.gimmick, stage.storedValueGimmick,
+    allowedFns, false, stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick,
   );
   await processRunResult(result, entry);
 }
@@ -2113,7 +2172,7 @@ async function onEndTurn(): Promise<void> {
     deck.drawPile, deck.discardPile, characterCards,
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
-    undefined, false, stage.gimmick, stage.storedValueGimmick,
+    undefined, false, stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick,
   );
   await processRunResult(result);
 }

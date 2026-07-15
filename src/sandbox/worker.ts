@@ -1,7 +1,8 @@
-import type { CombatState, EnemyIntent } from "../game/state";
+import type { CombatState, EnemyIntent, ErrorType } from "../game/state";
+import { ERROR_TYPES } from "../game/state";
 import { applyAction, type Action } from "../game/actions";
 import { CARDS, HAND_SIZE, getCardBaseCost, type CardId } from "../game/cards";
-import type { StageGimmick, StoredValueGimmick } from "../game/stages";
+import type { StageGimmick, StoredValueGimmick, WeaknessGimmick } from "../game/stages";
 
 // 常時ON（アンロック不要）: storedValue() turnsSinceRelease() comboCount() sameActionStreak()
 //                          daemonCost() mainClock() deploy(fn)
@@ -22,6 +23,7 @@ export interface UnlockFunctions {
   myDrawPile: boolean;
   myDiscard: boolean;
   myDeployed: boolean;
+  cardCost: boolean;
 }
 
 export interface DeckSnapshot {
@@ -49,6 +51,7 @@ export interface RunRequest {
   runDaemonAtStart?: boolean; // trueの場合、メインスクリプト実行前に一度だけDaemonを走らせる（戦闘開始時用）
   gimmick?: StageGimmick; // ステージごとの対抗ギミック設定
   storedValueGimmick?: StoredValueGimmick; // Object Breakerのstoredvalueを狙った対抗ギミック（gimmickと並行して有効）
+  weaknessGimmick?: WeaknessGimmick; // Bug Injectorのdebug()/弱点属性を狙った対抗ギミック（gimmickと並行して有効）
 }
 
 export interface RunResult {
@@ -275,12 +278,15 @@ function run(req: RunRequest): RunResult {
     }
   };
 
+  // Unique: 手札（Daemonならデプロイ済み）にある枚数分まで使える。ドローで枚数が増えれば、その場で追加使用できる
   const checkUnique = (id: CardId): void => {
     const def = CARDS[id];
     if (!def) return;
     if (!def.attributes.includes("unique")) return;
-    if (state.uniqueUsedThisTurn.includes(id)) {
-      throw new Error(`「${def.fn}」は1ターンに1回しか使えません（Unique）`);
+    const copiesAvailable = availableSource().filter(cid => cid === id).length;
+    const usedCount = state.uniqueUsedThisTurn.filter(usedId => usedId === id).length;
+    if (usedCount >= copiesAvailable) {
+      throw new Error(`「${def.fn}」は手札にある枚数（${copiesAvailable}枚）までしか使えません（Unique）`);
     }
     state.uniqueUsedThisTurn.push(id);
   };
@@ -722,6 +728,174 @@ function run(req: RunRequest): RunResult {
     },
   };
 
+  // ── Bug Injector: debug()のエラーログ生成 ──────────────────────────
+  // weakness(最多)/edgeWeakness(最少)以外の残り1種が「中間」。3種の出現回数は必ず異なる値にし、
+  // 種類ごとにまとめず1件ずつ混在させることで、目視ではなく集計コードを書かないと判別できないようにする。
+  // extra: ログ肥大化ギミック用。13:10:7の比率を保ったまま総数を底上げする
+  const generateWeaknessLog = (weakness: ErrorType, edgeWeakness: ErrorType, extra = 0): string[] => {
+    const middle = ERROR_TYPES.find(t => t !== weakness && t !== edgeWeakness)!;
+    const base: Array<[ErrorType, number]> = [[weakness, 13], [middle, 10], [edgeWeakness, 7]];
+    const counts: Array<[ErrorType, number]> = extra > 0
+      ? base.map(([type, n], i) => [type, n + Math.round(extra * [13, 10, 7][i] / 30)])
+      : base;
+    const log: string[] = [];
+    let remaining = counts.map(([, n]) => n);
+    while (remaining.some(n => n > 0)) {
+      remaining = remaining.map((n, i) => {
+        if (n <= 0) return n;
+        log.push(counts[i][0]);
+        return n - 1;
+      });
+    }
+    return log;
+  };
+
+  // ── Bug Injector: 弱点系カード共通ロジック ─────────────────────────
+  // true一致判定 → 各種weaknessGimmickによる上書き・副作用を1箇所に集約する
+  type WeaknessCompareTo = "weakness" | "edgeWeakness";
+  const resolveWeaknessOutcome = (
+    cardId: CardId, guessedType: string, compareTo: WeaknessCompareTo,
+  ): { matched: boolean; disabled: boolean } => {
+    const wg = req.weaknessGimmick;
+    state.usedWeaknessCardThisTurn = true; // 未対応のバグギミック用
+
+    // サイレントキャッチ: このカードの通算使用回数が閾値を超えていれば完全無効化
+    const useCount = (state.weaknessCardUseCount[cardId] ?? 0) + 1;
+    state.weaknessCardUseCount[cardId] = useCount;
+    if (wg?.kind === "silentCatch" && useCount > wg.useThreshold) {
+      return { matched: false, disabled: true };
+    }
+
+    const actual = compareTo === "edgeWeakness" ? state.enemy.edgeWeakness : state.enemy.weakness;
+    if (guessedType !== actual) return { matched: false, disabled: false };
+
+    // 防御的コンパイル: 弱点判定システムが機能していない間は強制的に不一致扱い
+    if (state.weaknessDisabledThisTurn) return { matched: false, disabled: false };
+
+    // 例外耐性: 同ターン内の真の一致回数が閾値を超えたら以降は不一致扱い
+    state.matchedHitsThisTurn++;
+    if (wg?.kind === "exceptionImmunity" && state.matchedHitsThisTurn > wg.matchThreshold) {
+      return { matched: false, disabled: false };
+    }
+
+    return { matched: true, disabled: false };
+  };
+
+  const weaknessAttackFn = (
+    cardId: CardId, guessedTypeArg: unknown, compareTo: WeaknessCompareTo,
+    matchedDmg: number, unmatchedDmg: number, baseCost: number, ignoresBlock?: boolean,
+  ): void => {
+    checkInHand(cardId);
+    const def = CARDS[cardId];
+    if (def?.attributes.includes("unique")) checkUnique(cardId);
+    const guessedType = String(guessedTypeArg);
+    const { matched, disabled } = resolveWeaknessOutcome(cardId, guessedType, compareTo);
+    const dmg = disabled ? 0 : (matched ? matchedDmg : unmatchedDmg);
+    const cost = effectiveCost(cardId, baseCost);
+    record({ kind: "weaknessAttack", matched, dmg, ignoresBlock, cost }, `${def?.fn ?? cardId}(${guessedType})`);
+    addCombo();
+    if (disabled) {
+      consoleLogs.push(`[GIMMICK] ⚠ サイレントキャッチ発動！ 「${def?.fn ?? cardId}」は握りつぶされ無効化された`);
+    }
+  };
+
+  const weaknessBlockFn = (
+    cardId: CardId, guessedTypeArg: unknown,
+    matchedAmount: number, unmatchedAmount: number, baseCost: number,
+  ): void => {
+    checkInHand(cardId);
+    checkUnique(cardId);
+    const guessedType = String(guessedTypeArg);
+    const { matched, disabled } = resolveWeaknessOutcome(cardId, guessedType, "weakness");
+    const amount = disabled ? 0 : (matched ? matchedAmount : unmatchedAmount);
+    const cost = effectiveCost(cardId, baseCost);
+    record({ kind: "weaknessBlock", matched, amount, cost }, `errorBoundary(${guessedType})`);
+    addCombo();
+    if (disabled) {
+      consoleLogs.push("[GIMMICK] ⚠ サイレントキャッチ発動！ 「errorBoundary」は握りつぶされ無効化された");
+    }
+  };
+
+  // Bug Injector cards
+  const biLib: Record<string, (...args: unknown[]) => void> = {
+    debug: () => {
+      checkInHand("debug");
+      checkUnique("debug");
+      const cost = effectiveCost("debug", 1);
+      record({ kind: "debug", cost }, "debug()");
+      addCombo();
+      const wg = req.weaknessGimmick;
+      const extra = wg?.kind === "logBloat"
+        ? Math.max(0, state.turn - wg.turnThreshold) * wg.growthPerTurn
+        : 0;
+      return generateWeaknessLog(state.enemy.weakness, state.enemy.edgeWeakness, extra);
+    },
+    throwTypeError: () => weaknessAttackFn("throwTypeError", "TypeError", "weakness", 12, 5, 2),
+    throwRangeError: () => weaknessAttackFn("throwRangeError", "RangeError", "weakness", 12, 5, 2),
+    throwSyntaxError: () => weaknessAttackFn("throwSyntaxError", "SyntaxError", "weakness", 12, 5, 2),
+    hotfix: () => {
+      checkInHand("hotfix");
+      const cost = effectiveCost("hotfix", 0);
+      record({ kind: "heal", amount: 3, cost }, "hotfix()");
+      addCombo();
+      disposeCard("hotfix");
+    },
+    firewall: () => {
+      checkInHand("firewall");
+      const cost = effectiveCost("firewall", 2);
+      record({ kind: "block", amount: 9, cost }, "firewall()");
+      addCombo();
+    },
+    stackTrace: () => {
+      checkInHand("stackTrace");
+      const cost = effectiveCost("stackTrace", 1);
+      record({ kind: "asyncDraw", cost }, "stackTrace()");
+      addCombo();
+      drawCards(2);
+    },
+    raiseException: (type) => weaknessAttackFn("raiseException", type, "weakness", 21, 8, 3),
+    errorBoundary: (type) => weaknessBlockFn("errorBoundary", type, 16, 8, 3),
+    coreDump: (type) => weaknessAttackFn("coreDump", type, "weakness", 36, 10, 4),
+    edgeCase: (type) => weaknessAttackFn("edgeCase", type, "edgeWeakness", 40, 10, 4),
+    hotReload: () => {
+      checkInHand("hotReload");
+      checkUnique("hotReload");
+      const cost = effectiveCost("hotReload", 2);
+      record({ kind: "hotReload", cost }, "hotReload()");
+      addCombo();
+      drawCards(3);
+      // 割引対象は手札・デプロイ済みの両方（呼び出し元がMain ThreadでもDaemonでも、両方まとめて割引く）
+      // 割引は重複させない（複数回使っても-1のまま。Math.maxで頭打ちにする）
+      for (const id of [...runtimeHand, ...deployedCardIds]) {
+        state.costReductionMap[id] = Math.max(state.costReductionMap[id] ?? 0, 1);
+      }
+    },
+    segmentationFault: (type) => weaknessAttackFn("segmentationFault", type, "weakness", 50, 16, 4, true),
+  };
+
+  // BI attack/block overrides（コンボ非依存の固定値）
+  const biAttackFn = (): void => {
+    if (availableSource().includes("biAttack")) {
+      checkInHand("biAttack");
+      const cost = effectiveCost("biAttack", 2);
+      record({ kind: "attack", amount: 5, cost }, "attack()");
+      addCombo();
+    } else {
+      legacyLib.attack!(0);
+    }
+  };
+
+  const biBlockFn = (): void => {
+    if (availableSource().includes("biBlock")) {
+      checkInHand("biBlock");
+      const cost = effectiveCost("biBlock", 2);
+      record({ kind: "block", amount: 6, cost }, "block()");
+      addCombo();
+    } else {
+      legacyLib.block!(0);
+    }
+  };
+
   const toFnNames = (ids: CardId[]) => ids.map(id => CARDS[id]?.fn ?? id);
 
   // 常時ON（アンロック不要）
@@ -878,6 +1052,39 @@ function run(req: RunRequest): RunResult {
         state.storedValue = Math.max(0, state.storedValue + storedValueDelta);
       }
 
+      // Bug Injector: weaknessGimmickのターン境界処理（player.blockが0にリセットされる前に判定する必要がある）
+      const weaknessGimmick = req.weaknessGimmick;
+      if (weaknessGimmick?.kind === "defensiveCompile") {
+        state.weaknessDisabledThisTurn = state.player.block >= weaknessGimmick.blockThreshold;
+        if (state.weaknessDisabledThisTurn) {
+          consoleLogs.push("[GIMMICK] ⚠ 防御的コンパイル発動！ 次ターン、弱点判定システムが機能しなくなる");
+        }
+      }
+      if (weaknessGimmick?.kind === "unpatchedBug") {
+        if (state.usedWeaknessCardThisTurn) {
+          state.turnsSinceWeaknessCardUsed = 0;
+        } else {
+          state.turnsSinceWeaknessCardUsed++;
+          if (state.turnsSinceWeaknessCardUsed >= weaknessGimmick.idleTurns) {
+            state.enemy.hp = Math.min(state.enemy.maxHp, state.enemy.hp + weaknessGimmick.healAmount);
+            state.turnsSinceWeaknessCardUsed = 0;
+            consoleLogs.push(`[GIMMICK] ⚠ 未対応のバグ！ 敵が自己修復しHP+${weaknessGimmick.healAmount}回復した`);
+          }
+        }
+      }
+      state.usedWeaknessCardThisTurn = false;
+      state.matchedHitsThisTurn = 0;
+
+      // Bug Injectorの弱点属性は、全ステージ共通で毎ターンランダムに再抽選する（ドラゴン限定ではない）。
+      // 3種から弱点を1つ選び、残り2種から対極を選ぶ（常に異なる値になる）
+      {
+        const nextWeakness = ERROR_TYPES[Math.floor(Math.random() * ERROR_TYPES.length)];
+        const remaining = ERROR_TYPES.filter(t => t !== nextWeakness);
+        const nextEdge = remaining[Math.floor(Math.random() * remaining.length)];
+        state.enemy.weakness = nextWeakness;
+        state.enemy.edgeWeakness = nextEdge;
+      }
+
       // 次ターン準備（Main Clock・コンボ等）
       state.player.block       = 0;
       state.energy             = state.maxEnergy + state.nextTurnExtraEnergy;
@@ -938,8 +1145,20 @@ function run(req: RunRequest): RunResult {
     if (!id) return false;
     const def = CARDS[id];
     if (!def) return false;
-    if (def.attributes.includes("unique") && state.uniqueUsedThisTurn.includes(id)) return false;
+    if (def.attributes.includes("unique")) {
+      const copiesAvailable = availableSource().filter(cid => cid === id).length;
+      const usedCount = state.uniqueUsedThisTurn.filter(usedId => usedId === id).length;
+      if (usedCount >= copiesAvailable) return false;
+    }
     return true;
+  };
+
+  // cardCost(fnName): そのカードの現在のコスト（costReductionMap等の割引反映後）を取得する
+  const cardCostFn = (fn: unknown): number => {
+    const fnName = String(fn);
+    const id = availableSource().find(cid => CARDS[cid]?.fn === fnName);
+    if (!id) return 0;
+    return effectiveCost(id, getCardBaseCost(id));
   };
 
   // deploy(fnName): 手札のカードをコードからDaemonへ常駐化する（Main/Daemon両方から呼べる）
@@ -1046,6 +1265,10 @@ function run(req: RunRequest): RunResult {
           daemonApiNames.push("block"); daemonApiValues.push(obBlockFn);
         } else if (id === "tutorialBlock") {
           daemonApiNames.push("block"); daemonApiValues.push(tutorialBlockFn);
+        } else if (id === "biAttack") {
+          daemonApiNames.push("attack"); daemonApiValues.push(biAttackFn);
+        } else if (id === "biBlock") {
+          daemonApiNames.push("block"); daemonApiValues.push(biBlockFn);
         } else if (fnName === "attack") {
           daemonApiNames.push("attack"); daemonApiValues.push(legacyLib["attack"]);
         } else if (fnName === "block") {
@@ -1056,6 +1279,8 @@ function run(req: RunRequest): RunResult {
           daemonApiNames.push(fnName); daemonApiValues.push(lrLib[fnName]);
         } else if (obLib[fnName]) {
           daemonApiNames.push(fnName); daemonApiValues.push(obLib[fnName]);
+        } else if (biLib[fnName]) {
+          daemonApiNames.push(fnName); daemonApiValues.push(biLib[fnName]);
         } else if (tutorialLib[fnName]) {
           daemonApiNames.push(fnName); daemonApiValues.push(tutorialLib[fnName]);
         } else if (legacyLib[fnName]) {
@@ -1067,6 +1292,7 @@ function run(req: RunRequest): RunResult {
         daemonApiNames.push(name); daemonApiValues.push(fn);
       }
       if (req.unlocks.isUsable) { daemonApiNames.push("isUsable"); daemonApiValues.push(isUsableFn); }
+      if (req.unlocks.cardCost) { daemonApiNames.push("cardCost"); daemonApiValues.push(cardCostFn); }
       daemonApiNames.push("deploy");   daemonApiValues.push(deployFn);
 
       try {
@@ -1128,6 +1354,12 @@ function run(req: RunRequest): RunResult {
       } else if (id === "tutorialBlock") {
         apiNames.push("block");
         apiValues.push(tutorialBlockFn);
+      } else if (id === "biAttack") {
+        apiNames.push("attack");
+        apiValues.push(biAttackFn);
+      } else if (id === "biBlock") {
+        apiNames.push("block");
+        apiValues.push(biBlockFn);
       } else if (fnName === "attack") {
         apiNames.push("attack");
         apiValues.push(legacyLib["attack"]);
@@ -1144,6 +1376,9 @@ function run(req: RunRequest): RunResult {
       } else if (obLib[fnName]) {
         apiNames.push(fnName);
         apiValues.push(obLib[fnName]);
+      } else if (biLib[fnName]) {
+        apiNames.push(fnName);
+        apiValues.push(biLib[fnName]);
       } else if (tutorialLib[fnName]) {
         apiNames.push(fnName);
         apiValues.push(tutorialLib[fnName]);
@@ -1198,6 +1433,7 @@ function run(req: RunRequest): RunResult {
     apiNames.push(name); apiValues.push(fn);
   }
   if (req.unlocks.isUsable) { apiNames.push("isUsable"); apiValues.push(isUsableFn); }
+  if (req.unlocks.cardCost) { apiNames.push("cardCost"); apiValues.push(cardCostFn); }
   apiNames.push("deploy");   apiValues.push(deployFn);
 
   // allowedFns 指定時（チュートリアル等）は、その名前の関数だけをサンドボックスに公開する

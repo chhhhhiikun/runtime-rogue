@@ -26,6 +26,16 @@ export type CardId =
   | "surge" | "bigRelease" | "ironWall"
   // Object Breaker Fatal
   | "singularity"
+  // Bug Injector Starter
+  | "biAttack" | "biBlock"
+  // Bug Injector Common
+  | "throwTypeError" | "throwRangeError" | "throwSyntaxError" | "hotfix" | "firewall"
+  // Bug Injector Uncommon
+  | "stackTrace" | "raiseException" | "errorBoundary"
+  // Bug Injector Rare
+  | "coreDump" | "edgeCase" | "hotReload"
+  // Bug Injector Fatal
+  | "segmentationFault"
   // チュートリアル専用（数値固定・コンボ計算なし。本編の報酬プールには含めない）
   | "tutorialAttack" | "tutorialBlock" | "tutorialBurst" | "tutorialRecover";
 
@@ -121,8 +131,8 @@ export const CARDS: Record<CardId, CardDef> = {
   debug: {
     id: "debug", fn: "debug",
     signature: "debug()",
-    description: "敵の詳細情報をコンソールに出力。コスト: 0",
-    rarity: "common", attributes: [],
+    description: "敵のエラーログ（30件の配列）を取得する。コスト: 1",
+    rarity: "starter", attributes: ["unique"],
   },
   cycler: {
     id: "cycler", fn: "cycler",
@@ -331,6 +341,100 @@ export const CARDS: Record<CardId, CardDef> = {
     rarity: "fatal", attributes: ["unique"],
   },
 
+  // ─── Bug Injector Starter ──────────────────────────────────────
+  biAttack: {
+    id: "biAttack", fn: "attack",
+    signature: "attack()",
+    description: "敵に 5 ダメージ。コスト: 2",
+    rarity: "starter", attributes: [],
+  },
+  biBlock: {
+    id: "biBlock", fn: "block",
+    signature: "block()",
+    description: "ブロック +6。コスト: 2",
+    rarity: "starter", attributes: [],
+  },
+
+  // ─── Bug Injector Common ────────────────────────────────────────
+  throwTypeError: {
+    id: "throwTypeError", fn: "throwTypeError",
+    signature: "throwTypeError()",
+    description: "弱点(最多)がTypeErrorなら敵に12ダメージ、それ以外は5ダメージ。コスト: 2",
+    rarity: "common", attributes: [],
+  },
+  throwRangeError: {
+    id: "throwRangeError", fn: "throwRangeError",
+    signature: "throwRangeError()",
+    description: "弱点(最多)がRangeErrorなら敵に12ダメージ、それ以外は5ダメージ。コスト: 2",
+    rarity: "common", attributes: [],
+  },
+  throwSyntaxError: {
+    id: "throwSyntaxError", fn: "throwSyntaxError",
+    signature: "throwSyntaxError()",
+    description: "弱点(最多)がSyntaxErrorなら敵に12ダメージ、それ以外は5ダメージ。コスト: 2",
+    rarity: "common", attributes: [],
+  },
+  hotfix: {
+    id: "hotfix", fn: "hotfix",
+    signature: "hotfix()",
+    description: "自分 HP +3 回復。使い捨て。コスト: 0",
+    rarity: "common", attributes: ["disposable"],
+  },
+  firewall: {
+    id: "firewall", fn: "firewall",
+    signature: "firewall()",
+    description: "ブロック +9。コスト: 2",
+    rarity: "common", attributes: [],
+  },
+
+  // ─── Bug Injector Uncommon ──────────────────────────────────────
+  stackTrace: {
+    id: "stackTrace", fn: "stackTrace",
+    signature: "stackTrace()",
+    description: "カードを2枚引く。コスト: 1",
+    rarity: "uncommon", attributes: [],
+  },
+  raiseException: {
+    id: "raiseException", fn: "raiseException",
+    signature: "raiseException(\"${1:TypeError}\")",
+    description: "引数が弱点(最多)と一致なら敵に21ダメージ、不一致なら8ダメージ。コスト: 3",
+    rarity: "uncommon", attributes: ["unique"],
+  },
+  errorBoundary: {
+    id: "errorBoundary", fn: "errorBoundary",
+    signature: "errorBoundary(\"${1:TypeError}\")",
+    description: "引数が弱点(最多)と一致ならブロック+16、不一致なら+8。コスト: 3",
+    rarity: "uncommon", attributes: ["unique"],
+  },
+
+  // ─── Bug Injector Rare ───────────────────────────────────────────
+  coreDump: {
+    id: "coreDump", fn: "coreDump",
+    signature: "coreDump(\"${1:TypeError}\")",
+    description: "引数が弱点(最多)と一致なら敵に36ダメージ、不一致なら10ダメージ。コスト: 4",
+    rarity: "rare", attributes: ["unique"],
+  },
+  edgeCase: {
+    id: "edgeCase", fn: "edgeCase",
+    signature: "edgeCase(\"${1:TypeError}\")",
+    description: "引数が最少属性と一致なら敵に40ダメージ、不一致なら10ダメージ。コスト: 4",
+    rarity: "rare", attributes: ["unique"],
+  },
+  hotReload: {
+    id: "hotReload", fn: "hotReload",
+    signature: "hotReload()",
+    description: "カードを3枚引き、このターンの手札コストを-1（最低0）。コスト: 2",
+    rarity: "rare", attributes: ["unique"],
+  },
+
+  // ─── Bug Injector Fatal（最上位・排出率1%）───────────────────────
+  segmentationFault: {
+    id: "segmentationFault", fn: "segmentationFault",
+    signature: "segmentationFault(\"${1:TypeError}\")",
+    description: "引数が弱点(最多)と一致なら敵に50ダメージ（ブロック無視）、不一致なら16ダメージ（ブロック無視）。コスト: 4",
+    rarity: "fatal", attributes: ["unique"],
+  },
+
   // ─── チュートリアル専用（コンボ計算なしの固定値） ───────────────
   tutorialAttack: {
     id: "tutorialAttack", fn: "attack",
@@ -377,7 +481,7 @@ export function getCardBaseCost(id: CardId): number {
     case "overload": return 0; // dynamic
     case "reboot": return 0;
     case "combo": return 0;  // dynamic
-    case "debug": return 0;
+    case "debug": return 1;
     case "cycler": return 0;
     // LR Starter
     case "lrAttack": return 1;
@@ -419,6 +523,26 @@ export function getCardBaseCost(id: CardId): number {
     case "ironWall": return 3;
     // OB Fatal
     case "singularity": return 3;
+    // BI Starter
+    case "biAttack": return 2;
+    case "biBlock": return 2;
+    // debug は既存Legacyケース（0）を流用
+    // BI Common
+    case "throwTypeError": return 2;
+    case "throwRangeError": return 2;
+    case "throwSyntaxError": return 2;
+    case "hotfix": return 0;
+    case "firewall": return 2;
+    // BI Uncommon
+    case "stackTrace": return 1;
+    case "raiseException": return 3;
+    case "errorBoundary": return 3;
+    // BI Rare
+    case "coreDump": return 4;
+    case "edgeCase": return 4;
+    case "hotReload": return 2;
+    // BI Fatal
+    case "segmentationFault": return 4;
     // チュートリアル専用
     case "tutorialAttack": return 1;
     case "tutorialBlock": return 1;

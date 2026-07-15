@@ -2,7 +2,7 @@ import CodeWorker from "./worker.ts?worker";
 import type { RunRequest, RunResult, UnlockFunctions, DeckSnapshot } from "./worker";
 import type { CombatState, EnemyIntent } from "../game/state";
 import type { CardId } from "../game/cards";
-import type { StageGimmick, StoredValueGimmick } from "../game/stages";
+import type { StageGimmick, StoredValueGimmick, WeaknessGimmick } from "../game/stages";
 
 export type { UnlockFunctions, DeckSnapshot };
 
@@ -13,6 +13,7 @@ export const DEFAULT_UNLOCKS: UnlockFunctions = {
   damageDealtThisTurn: true, comboIncrement: true, turn: true,
   endTurn: true, enemyIntent: true, isUsable: true,
   myDeck: true, myHand: true, myDrawPile: true, myDiscard: true, myDeployed: true,
+  cardCost: true,
 };
 
 // Worker はメッセージごとに独立したステートレス処理（RunRequest→RunResult）なので、
@@ -44,6 +45,7 @@ export function runUserCode(
   runDaemonAtStart?: boolean,
   gimmick?: StageGimmick,
   storedValueGimmick?: StoredValueGimmick,
+  weaknessGimmick?: WeaknessGimmick,
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     const worker = getWorker();
@@ -82,7 +84,7 @@ export function runUserCode(
       intentPattern, intentIndex,
       daemonCode, deployedCardIds,
       allowedFns, runDaemonAtStart,
-      gimmick, storedValueGimmick,
+      gimmick, storedValueGimmick, weaknessGimmick,
     };
     worker.postMessage(req);
   });
