@@ -58,9 +58,15 @@ export interface CombatState {
   seedLockRemaining: number;    // seedLock()の効果があと何ターン残っているか（streamInterferenceギミック無効化用）
   rngSeedFreezeSnapshot: number; // seedFreezeギミック発動中にrngSeed()が返す、凍結時点でのスナップショット値
   oddsBoostActive: boolean;     // oddsBoost()の効果が次の1回分残っているか（ターン境界で失効）
+  oddsBoostBonus: number;       // oddsBoostActive中に加算するしきい値（通常0.2、リファクタリング済みなら0.3）
   insuranceActive: boolean;     // insurance()の効果が次の1回分残っているか（ターン境界で失効）
   lastGambleCardId: string | null; // 直近のギャンブル系カード呼び出しのCardId（retryRoll用。ターン境界でリセット）
   lastGambleAmount: number;        // 直近のギャンブル系カード呼び出しで実際に適用された数値（retryRoll用）
+  // パッケージマネージャ: リファクタリング済みのCardId一覧。ラン単位で持続する（main.ts側で戦闘をまたいで引き継ぐ）
+  upgradedCardIds: string[];
+  // プラグイン（ラン単位で持続。main.ts側で戦闘開始時に反映する）
+  extraDrawPerTurn: number;   // 自動プリロード: 毎ターンの追加ドロー枚数
+  baseComboIncrement: number; // 高速コンパイラ: コンボ増加量のベース値（デフォルト1、ターン境界のリセット先）
 }
 
 export const MAX_ENERGY = 10;
@@ -112,8 +118,12 @@ export function initialState(): CombatState {
     seedLockRemaining: 0,
     rngSeedFreezeSnapshot: 0,
     oddsBoostActive: false,
+    oddsBoostBonus: 0.2,
     insuranceActive: false,
     lastGambleCardId: null,
     lastGambleAmount: 0,
+    upgradedCardIds: [],
+    extraDrawPerTurn: 0,
+    baseComboIncrement: 1,
   };
 }

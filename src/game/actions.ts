@@ -76,7 +76,9 @@ export type ActionCore =
 // viaDaemon: Daemon による自動実行由来のアクションかどうか（ログ表示・アニメーション分岐用）
 // cardId: このアクションを発生させた具体的なカードid（実行行・カードハイライト用。record()経由のアクションのみ付与）
 // sourceLine: ユーザーが書いたコード内の行番号（1-indexed、メイン/DAEMONエディタ自身のコード範囲内のみ。同上）
-export type Action = ActionCore & { viaDaemon?: boolean; cardId?: CardId; sourceLine?: number };
+// upgraded: このアクションを発生させたカードがリファクタリング済みかどうか（パッケージマネージャ用。
+// カードによって強化の中身は異なるため、applyAction側の各caseで個別に解釈する）
+export type Action = ActionCore & { viaDaemon?: boolean; cardId?: CardId; sourceLine?: number; upgraded?: boolean };
 
 function damageEnemy(s: CombatState, raw: number): number {
   let dmg = raw;
@@ -120,7 +122,7 @@ export function applyAction(
     s.energy             = s.maxEnergy + s.nextTurnExtraEnergy;
     s.nextTurnExtraEnergy = 0;
     s.comboCount         = 0;
-    s.comboIncrement     = 1;
+    s.comboIncrement     = s.baseComboIncrement;
     s.asyncAwaitActive   = false;
     s.rebootUsedThisTurn = false;
     s.uniqueUsedThisTurn = [];
@@ -248,13 +250,16 @@ export function applyAction(
     case "lrAttack": {
       // combo火力にキャップ(+3)を設け、単純連打による青天井の火力インフレを抑える。
       // 爆発力は incrementalAttack() など専用カードで出す設計。
-      const dmg  = 3 + Math.min(3, Math.floor(a.comboCount / 4));
+      const base = a.upgraded ? 4 : 3;
+      const dmg  = base + Math.min(3, Math.floor(a.comboCount / 4));
       const raw   = vulnDmg(s, dmg);
       const dealt = damageEnemy(s, raw);
       return `attack: 敵に ${dealt} ダメージ (combo:${a.comboCount})`;
     }
     case "lrBlock": {
-      const amount = Math.max(2, 5 - Math.floor(a.comboCount / 2));
+      const base = a.upgraded ? 6 : 5;
+      const min  = a.upgraded ? 3 : 2;
+      const amount = Math.max(min, base - Math.floor(a.comboCount / 2));
       s.player.block += amount;
       return `block: ブロック +${amount} (combo:${a.comboCount})`;
     }
@@ -267,14 +272,15 @@ export function applyAction(
       return `noop: 何もしない`;
     }
     case "forceQuit": {
-      const raw   = vulnDmg(s, 4);
+      const raw   = vulnDmg(s, a.upgraded ? 6 : 4);
       const dealt = damageEnemy(s, raw);
       return `forceQuit: 敵に ${dealt} ダメージ、実行を終了`;
     }
     case "overClock": {
+      const energyGain = a.upgraded ? 2 : 1;
       s.player.hp = Math.max(0, s.player.hp - 2);
-      s.energy += 1;
-      return `overClock: HP -2、エネルギー+1`;
+      s.energy += energyGain;
+      return `overClock: HP -2、エネルギー+${energyGain}`;
     }
     case "incrementalAttack": {
       const raw   = vulnDmg(s, a.comboCount * 2);
@@ -282,16 +288,18 @@ export function applyAction(
       return `incrementalAttack: 敵に ${dealt} ダメージ（コンボ×2）`;
     }
     case "patch": {
-      s.player.hp = Math.min(s.player.maxHp, s.player.hp + 2);
-      return `patch: HP +2 回復`;
+      const amount = a.upgraded ? 4 : 2;
+      s.player.hp = Math.min(s.player.maxHp, s.player.hp + amount);
+      return `patch: HP +${amount} 回復`;
     }
     case "incrementalBlock": {
       s.player.block += a.comboCount;
       return `incrementalBlock: ブロック +${a.comboCount}（コンボ数）`;
     }
     case "bufferOverflowProtection": {
-      s.player.block += 3;
-      return `bufferOverflowProtection: ブロック +3`;
+      const amount = a.upgraded ? 4 : 3;
+      s.player.block += amount;
+      return `bufferOverflowProtection: ブロック +${amount}`;
     }
     case "asyncDraw": {
       return `asyncDraw: カードを2枚ドロー`;
@@ -302,26 +310,29 @@ export function applyAction(
       return `stackOverflow: HP -3、コンボ増加が+5に`;
     }
     case "lrExecute": {
-      if (s.enemy.hp <= a.comboCount * 3) {
+      const multiplier = a.upgraded ? 4 : 3;
+      if (s.enemy.hp <= a.comboCount * multiplier) {
         s.enemy.hp = 0;
-        return `execute: 処刑成功！（敵HP ≤ コンボ×3）`;
+        return `execute: 処刑成功！（敵HP ≤ コンボ×${multiplier}）`;
       }
-      return `execute: 敵HPが高く不発（コンボ×3 = ${a.comboCount * 3}）`;
+      return `execute: 敵HPが高く不発（コンボ×${multiplier} = ${a.comboCount * multiplier}）`;
     }
     case "compilerOptimization": {
       return `compilerOptimization: 3枚ドロー、通常カードのコスト0`;
     }
     case "overclockBurst": {
+      const comboGain = a.upgraded ? 4 : 3;
       const gained = s.maxEnergy - s.energy;
       s.energy = s.maxEnergy;
-      s.comboCount += 3;
-      return `overclockBurst: エネルギー +${gained}（全回復）、コンボ+3`;
+      s.comboCount += comboGain;
+      return `overclockBurst: エネルギー +${gained}（全回復）、コンボ+${comboGain}`;
     }
 
     // ── Object Breaker ───────────────────────────────────────────
     case "charge": {
-      s.storedValue += 2;
-      return `charge: 変数 +2（${s.storedValue}）`;
+      const amount = a.upgraded ? 4 : 2;
+      s.storedValue += amount;
+      return `charge: 変数 +${amount}（${s.storedValue}）`;
     }
     case "store": {
       s.storedValue += 4;
@@ -343,8 +354,9 @@ export function applyAction(
       return `compact: 変数 ${before} → ${after}、敵に ${dealt} ダメージ`;
     }
     case "defrag": {
-      s.player.hp = Math.min(s.player.maxHp, s.player.hp + 3);
-      return `defrag: HP +3 回復`;
+      const amount = a.upgraded ? 6 : 3;
+      s.player.hp = Math.min(s.player.maxHp, s.player.hp + amount);
+      return `defrag: HP +${amount} 回復`;
     }
     case "fortify": {
       const amount = Math.max(2, Math.floor(s.storedValue / 5));
@@ -356,12 +368,14 @@ export function applyAction(
       return `double: 変数を2倍に（${s.storedValue}）`;
     }
     case "overcharge": {
-      s.storedValue += 8;
+      const amount = a.upgraded ? 10 : 8;
+      s.storedValue += amount;
       s.player.hp = Math.max(0, s.player.hp - 2);
-      return `overcharge: 変数 +8（${s.storedValue}）、自分に2ダメージ`;
+      return `overcharge: 変数 +${amount}（${s.storedValue}）、自分に2ダメージ`;
     }
     case "siphon": {
-      const consumed = Math.min(5, s.storedValue);
+      const cap = a.upgraded ? 6 : 5;
+      const consumed = Math.min(cap, s.storedValue);
       s.storedValue -= consumed;
       s.player.hp = Math.min(s.player.maxHp, s.player.hp + consumed);
       return `siphon: 変数から${consumed}を消費してHP +${consumed}`;

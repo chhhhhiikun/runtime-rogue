@@ -680,3 +680,73 @@ export function getCardBaseCost(id: CardId): number {
     case "tutorialRecover": return 0;
   }
 }
+
+// パッケージマネージャ「リファクタリング」で強化された後に表示する説明文。
+// 変わった数値・文字は <span class="upgraded-value"> で囲み、UI側で強調表示する。
+// 対象はスターター・Common・Uncommon・Rare（Fatalは対象外。worker.ts/actions.tsのisUpgraded()判定と対応）。
+export const CARD_UPGRADE_DESCRIPTIONS: Partial<Record<CardId, string>> = {
+  // Loop Runner
+  lrAttack: "敵に <span class=\"upgraded-value\">4</span>+min(3,⌊combo/4⌋) ダメージ（最大<span class=\"upgraded-value\">7</span>）。コスト: 1",
+  lrBlock: "ブロック +max(<span class=\"upgraded-value\">3</span>, <span class=\"upgraded-value\">6</span>-⌊combo/2⌋)。コンボが増えるほど効果ダウン。コスト: 1",
+  noop: "コンボ +1、さらに<span class=\"upgraded-value\">カードを1枚ドロー</span>。コスト: 0",
+  initialize: "ブロック +3。次ターン開始時エネルギー +1。コスト: <span class=\"upgraded-value\">0</span>",
+  forceQuit: "敵に <span class=\"upgraded-value\">6</span> ダメージ。実行を終了する。コスト: 1",
+  overClock: "自分 HP -2 してエネルギー +<span class=\"upgraded-value\">2</span>。コスト: 0",
+  incrementalAttack: "敵にコンボ数 × 2 ダメージ。コスト: <span class=\"upgraded-value\">1</span>",
+  patch: "自分 HP +<span class=\"upgraded-value\">4</span> 回復。使い捨て。コスト: 0",
+  // Object Breaker
+  obAttack: "敵に <span class=\"upgraded-value\">7</span> ダメージ。コスト: 2",
+  obBlock: "ブロック +<span class=\"upgraded-value\">8</span>。コスト: 2",
+  charge: "変数に +<span class=\"upgraded-value\">4</span> を格納する。コスト: 0",
+  store: "変数に +4 を格納する。コスト: <span class=\"upgraded-value\">1</span>",
+  release: "変数の値だけ敵にダメージを与え、変数を 0 にする。コスト: <span class=\"upgraded-value\">0</span>",
+  compact: "変数を半分にし、減った分だけ即座に敵にダメージ。コスト: <span class=\"upgraded-value\">0</span>",
+  defrag: "自分 HP +<span class=\"upgraded-value\">6</span> 回復。使い捨て。コスト: 0",
+  fortify: "ブロック += max(2, ⌊変数/5⌋)。コスト: <span class=\"upgraded-value\">0</span>",
+  // Bug Injector
+  biAttack: "敵に <span class=\"upgraded-value\">7</span> ダメージ。コスト: 2",
+  biBlock: "ブロック +<span class=\"upgraded-value\">8</span>。コスト: 2",
+  debug: "敵のエラーログ（30件の配列）を取得する。コスト: <span class=\"upgraded-value\">0</span>",
+  throwTypeError: "弱点(最多)がTypeErrorなら敵に<span class=\"upgraded-value\">16</span>ダメージ、それ以外は<span class=\"upgraded-value\">6</span>ダメージ。コスト: 2",
+  throwRangeError: "弱点(最多)がRangeErrorなら敵に<span class=\"upgraded-value\">16</span>ダメージ、それ以外は<span class=\"upgraded-value\">6</span>ダメージ。コスト: 2",
+  throwSyntaxError: "弱点(最多)がSyntaxErrorなら敵に<span class=\"upgraded-value\">16</span>ダメージ、それ以外は<span class=\"upgraded-value\">6</span>ダメージ。コスト: 2",
+  hotfix: "自分 HP +<span class=\"upgraded-value\">6</span> 回復。使い捨て。コスト: 0",
+  firewall: "ブロック +<span class=\"upgraded-value\">12</span>。コスト: 2",
+  // RNG Cracker
+  rcAttack: "50%で敵に<span class=\"upgraded-value\">10</span>ダメージ、50%で<span class=\"upgraded-value\">4</span>ダメージ（平均<span class=\"upgraded-value\">7</span>）。コスト: 2",
+  rcBlock: "50%でブロック+<span class=\"upgraded-value\">11</span>、50%で+<span class=\"upgraded-value\">5</span>（平均<span class=\"upgraded-value\">8</span>）。コスト: 2",
+  skipRoll: "内部seedを<span class=\"upgraded-value\">2つ</span>空費して進める（効果なし）。コスト: 1",
+  doubleDown: "40%で敵に<span class=\"upgraded-value\">22</span>ダメージ、60%で<span class=\"upgraded-value\">8</span>ダメージ。コスト: 3",
+  riskyGuard: "40%でブロック+<span class=\"upgraded-value\">24</span>、60%で+<span class=\"upgraded-value\">9</span>。コスト: 3",
+  insurance: "次に使うギャンブル系カードが外れた時のペナルティを1回分軽減する。コスト: <span class=\"upgraded-value\">0</span>",
+  retryRoll: "直前のギャンブル系カードの結果を無効化し、次のseedで撃ち直す。コスト: <span class=\"upgraded-value\">0</span>",
+  oddsBoost: "次の1回だけ、ギャンブル系カードの成功ラインを+<span class=\"upgraded-value\">30%</span>有利にする。コスト: 2",
+  // Loop Runner Uncommon/Rare
+  incrementalBlock: "ブロック +コンボ数。コスト: <span class=\"upgraded-value\">1</span>",
+  bufferOverflowProtection: "手札を 1 枚捨て、ブロック +<span class=\"upgraded-value\">4</span>。コスト: 1",
+  asyncDraw: "カードを 2 枚引く。コスト: <span class=\"upgraded-value\">0</span>",
+  lrExecute: "敵 HP が コンボ数 × <span class=\"upgraded-value\">4</span> 以下なら即死（ブロック無視）。コスト: 3",
+  stackOverflow: "自分 HP -3。このターン中コンボ増加が +1 の代わりに +5 になる。コスト: <span class=\"upgraded-value\">1</span>",
+  overclockBurst: "エネルギーを全回復し、コンボ +<span class=\"upgraded-value\">4</span> を得る。コスト: 0",
+  // Object Breaker Uncommon/Rare
+  double: "変数を 2 倍にする。コスト: <span class=\"upgraded-value\">2</span>",
+  overcharge: "変数に +<span class=\"upgraded-value\">10</span> を格納する。自分に 2 ダメージ。コスト: 2",
+  siphon: "変数から <span class=\"upgraded-value\">6</span> を消費し、自分 HP をその分回復。コスト: 0",
+  surge: "変数を 1.5 倍にする（切り捨て）。コスト: <span class=\"upgraded-value\">1</span>",
+  bigRelease: "変数の 1.5 倍だけ敵にダメージを与え、変数を 0 にする。コスト: <span class=\"upgraded-value\">3</span>",
+  ironWall: "ブロック +<span class=\"upgraded-value\">18</span>。コスト: 3",
+  // Bug Injector Uncommon/Rare
+  stackTrace: "カードを2枚引く。コスト: <span class=\"upgraded-value\">0</span>",
+  raiseException: "引数が弱点(最多)と一致なら敵に<span class=\"upgraded-value\">26</span>ダメージ、不一致なら<span class=\"upgraded-value\">10</span>ダメージ。コスト: 3",
+  errorBoundary: "引数が弱点(最多)と一致ならブロック+<span class=\"upgraded-value\">20</span>、不一致なら+<span class=\"upgraded-value\">10</span>。コスト: 3",
+  coreDump: "引数が弱点(最多)と一致なら敵に<span class=\"upgraded-value\">45</span>ダメージ、不一致なら<span class=\"upgraded-value\">13</span>ダメージ。コスト: 4",
+  edgeCase: "引数が最少属性と一致なら敵に<span class=\"upgraded-value\">50</span>ダメージ、不一致なら<span class=\"upgraded-value\">13</span>ダメージ。コスト: 4",
+  hotReload: "カードを3枚引き、このターンの手札コストを-1（最低0）。コスト: <span class=\"upgraded-value\">1</span>",
+  // RNG Cracker Uncommon/Rare
+  forceSeed: "内部seedを指定した値に上書きする（次の出目を完全にコントロール）。コスト: <span class=\"upgraded-value\">3</span>",
+  chainRoll: "seedを2つ連続消費。両方成功なら敵に<span class=\"upgraded-value\">35</span>ダメージ、いずれか失敗なら<span class=\"upgraded-value\">10</span>ダメージ。コスト: 3",
+  fortifyBet: "seedを2つ連続消費。両方成功ならブロック+<span class=\"upgraded-value\">40</span>、いずれか失敗なら+<span class=\"upgraded-value\">13</span>。コスト: 3",
+  jackpot: "25%で敵に50ダメージ、外れなら自分に4ダメージ。コスト: <span class=\"upgraded-value\">3</span>",
+  seedLock: "<span class=\"upgraded-value\">4</span>ターンの間、敵によるseed干渉ギミックを無効化する。コスト: 3",
+  martingale: "基礎<span class=\"upgraded-value\">15</span>ダメージに、直前から連続で外れたギャンブル系カードの回数×<span class=\"upgraded-value\">7</span>ダメージを加算する。コスト: 3",
+};

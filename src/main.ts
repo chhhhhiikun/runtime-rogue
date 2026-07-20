@@ -3,7 +3,7 @@ import "./styles.css";
 import * as monaco from "monaco-editor";
 import { type MonacoEditor, createEditor, getCode, setCode, insertText, colorizeCode, READ_ITEMS, UNLOCKABLE_ITEMS } from "./ui/editor";
 import { MAX_ENERGY, MAX_DAEMON_COST, ERROR_TYPES, type CombatState, type ErrorType } from "./game/state";
-import { HAND_SIZE, CARDS, getCardBaseCost, type CardId } from "./game/cards";
+import { HAND_SIZE, CARDS, CARD_UPGRADE_DESCRIPTIONS, getCardBaseCost, type CardId } from "./game/cards";
 import { CHARACTERS, getCharacter, getAllCharacterCards, type CharacterDef } from "./game/characters";
 import { STAGES, type StageDef, type StageGimmick, type StoredValueGimmick, type WeaknessGimmick, type RngGimmick } from "./game/stages";
 import { TUTORIAL_STEPS, TUTORIAL_COMPLETE_OVERLAY, TUTORIAL_COMPLETE_LOG } from "./game/tutorial";
@@ -12,12 +12,16 @@ import { Deck } from "./game/deck";
 import { applyAction } from "./game/actions";
 import { runUserCode, type UnlockFunctions, type DeckSnapshot } from "./sandbox/runCode";
 import type { RunResult } from "./sandbox/worker";
+import { PLUGINS, getPlugin, type PluginEffect } from "./game/plugins";
+import { EVENTS, getEvent, rollOutcome, type EventOutcomeEffect } from "./game/events";
+import { generateMap, findNode, type RunMap, type MapNode, type NodeType } from "./game/mapgen";
 import {
   render, renderPileCards,
   appendLog, clearLog,
   appendConsoleLog, clearConsoleLog,
   showOverlay, hideOverlay,
   setEnemyName, setStageLabel, setDeckCount, setGimmick,
+  resetRunLog, getRunLog,
 } from "./ui/render";
 
 // ── 型 ─────────────────────────────────────────────────────────────
@@ -290,7 +294,7 @@ function openPileModal(cards: CardId[], title: string): void {
   document.getElementById("pile-popup-title")!.textContent = title;
   const cardsEl = document.getElementById("pile-popup-cards")!;
   cardsEl.innerHTML = "";
-  cardsEl.appendChild(renderPileCards(cards));
+  cardsEl.appendChild(renderPileCards(cards, state?.upgradedCardIds));
   document.getElementById("pile-modal")!.classList.remove("hidden");
 }
 
@@ -699,6 +703,62 @@ function showStatsModal(): void {
   document.getElementById("stats-modal")!.classList.remove("hidden");
 }
 
+// ── ラン結果モーダル（クリア/ゲームオーバー時の振り返り） ────────────
+
+function buildRunResultModal(): void {
+  const modal = document.createElement("div");
+  modal.id = "run-result-modal";
+  modal.className = "pile-modal hidden";
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "pile-backdrop";
+
+  const popup = document.createElement("div");
+  popup.className = "pile-popup stats-popup";
+  popup.innerHTML = `
+    <div class="pile-popup-header">
+      <span class="pile-popup-title" id="run-result-title"></span>
+    </div>
+    <div class="run-result-summary" id="run-result-summary"></div>
+    <div class="run-log-list" id="run-result-log"></div>
+    <div class="run-result-footer">
+      <button class="widget-btn primary" id="run-result-close-btn">ホームへ</button>
+    </div>
+  `;
+
+  modal.append(backdrop, popup);
+  document.body.appendChild(modal);
+
+  document.getElementById("run-result-close-btn")!.addEventListener("click", () => {
+    document.getElementById("run-result-modal")!.classList.add("hidden");
+    showMenuScreen();
+  });
+}
+
+function showRunResultModal(win: boolean): void {
+  document.getElementById("run-result-title")!.textContent = win ? "🏆 CLEAR!" : "💀 GAME OVER";
+
+  const totalBytes = loadTotalBytes();
+  const summaryEl = document.getElementById("run-result-summary")!;
+  summaryEl.innerHTML = `
+    <span>キャラクター: <b>${selectedCharacter.emoji} ${selectedCharacter.name}</b></span>
+    <span>このランで獲得したバイト: <b>${runByteEarned}</b></span>
+    <span>累計バイト: <b>${totalBytes}</b></span>
+  `;
+
+  const logEl = document.getElementById("run-result-log")!;
+  logEl.innerHTML = "";
+  for (const entry of getRunLog()) {
+    const line = document.createElement("div");
+    line.className = `line ${entry.cls}`;
+    line.textContent = entry.text;
+    logEl.appendChild(line);
+  }
+  logEl.scrollTop = logEl.scrollHeight;
+
+  document.getElementById("run-result-modal")!.classList.remove("hidden");
+}
+
 function closeStatsModal(): void {
   document.getElementById("stats-modal")?.classList.add("hidden");
 }
@@ -1083,6 +1143,14 @@ function trySpendBytes(amount: number): boolean {
   return true;
 }
 
+// パッケージマネージャ: キャッシュ（ラン単位・揮発性）を消費する
+function trySpendCash(amount: number): boolean {
+  if (runCash < amount) return false;
+  runCash -= amount;
+  updateCashLabel();
+  return true;
+}
+
 // ── レッスン（購入済みIDの永続化） ────────────────────────────────────
 
 function loadPurchasedLessons(): string[] {
@@ -1389,9 +1457,41 @@ let runStartTime = 0; // プレイ履歴用: 現在の周回(startGame)を開始
 let runCash       = 0; // ラン単位（揮発性）通貨。ラン終了でリセット
 let runByteEarned = 0; // このランで獲得したバイトの合計（run終了画面での表示用。tutorial中は未使用）
 
+// パッケージマネージャ: プラグイン（ラン単位で持続）とリファクタリング済みカード（ラン単位で持続）
+let runActivePluginIds: string[] = [];
+let runUpgradedCardIds: string[] = [];
+
+// 現在有効なプラグインの効果を、種別ごとに合算して返す（例: pluginBonus("maxHp") → 複数所持していれば合計）
+function pluginBonus(kind: PluginEffect["kind"]): number {
+  let total = 0;
+  for (const id of runActivePluginIds) {
+    const p = getPlugin(id);
+    if (!p || p.effect.kind !== kind) continue;
+    total += "amount" in p.effect ? p.effect.amount : p.effect.percent;
+  }
+  return total;
+}
+
+// プラグインを1つ付与する。即時に反映が必要な効果（最大HP）はここで即座に適用する。
+// それ以外（毎ターンMain Clock等）は戦闘開始時にpluginBonus()経由で都度反映される。
+function grantPlugin(id: string): void {
+  if (runActivePluginIds.includes(id)) return;
+  runActivePluginIds.push(id);
+  const p = getPlugin(id);
+  if (p?.effect.kind === "maxHp") {
+    PLAYER_MAX_HP += p.effect.amount;
+    runPlayerHp    += p.effect.amount;
+  }
+}
+
 let deckCards: CardId[]   = [];
 let runPlayerHp           = PLAYER_MAX_HP;
 let currentStageIndex     = 0;
+let runMap: RunMap | null = null;         // 今回のランのマップ（tutorial中は未使用）
+let runCurrentNodeId: string | null = null; // 現在地のノードid（null=まだどのノードにも入っていない＝floor0選択待ち）
+// 割り込みイベントの効果で、次の1戦闘だけに適用する保留効果（消費後はnull/falseに戻す）
+let pendingNextBattleEnergyPenalty: number | null = null;
+let pendingNextBattleIntentBoost = false;
 let state: CombatState;
 let deck: Deck;
 let busy            = false;
@@ -1474,6 +1574,9 @@ function hideAllTopScreens(): void {
   document.getElementById("char-select-screen")!.classList.add("hidden");
   document.getElementById("shop-screen")!.classList.add("hidden");
   document.getElementById("lesson-screen")!.classList.add("hidden");
+  document.getElementById("map-screen")!.classList.add("hidden");
+  document.getElementById("package-manager-screen")!.classList.add("hidden");
+  document.getElementById("event-screen")!.classList.add("hidden");
 }
 
 function showMenuScreen(): void {
@@ -1513,6 +1616,419 @@ function showGameScreen(): void {
   requestAnimationFrame(() => {
     entries.forEach(e => e.resyncLayout());
     daemonEditor?.layout();
+  });
+}
+
+// ── マップ画面 ────────────────────────────────────────────────────
+
+const NODE_TYPE_EMOJI: Record<NodeType, string> = { battle: "⚔", shop: "📦", event: "❓" };
+const NODE_TYPE_LABEL: Record<NodeType, string> = { battle: "戦闘", shop: "パッケージ\nマネージャ", event: "割り込み" };
+
+function reachableNodeIds(): Set<string> {
+  if (!runMap) return new Set();
+  if (runCurrentNodeId === null) {
+    return new Set(runMap.floors[0].map(n => n.id));
+  }
+  const current = findNode(runMap, runCurrentNodeId);
+  return new Set(current?.connections ?? []);
+}
+
+function enterNode(node: MapNode): void {
+  if (!reachableNodeIds().has(node.id)) return;
+  runCurrentNodeId = node.id;
+  if (node.type === "battle") {
+    currentStageIndex = node.stageIndex!;
+    showGameScreen();
+    startBattle();
+  } else if (node.type === "shop") {
+    showPackageManagerScreen();
+  } else {
+    showEventScreen();
+  }
+}
+
+function showMapScreen(): void {
+  hideAllTopScreens();
+  document.getElementById("map-screen")!.classList.remove("hidden");
+  renderMapScreen();
+}
+
+function renderMapScreen(): void {
+  const el = document.getElementById("map-screen")!;
+  if (!runMap) { el.innerHTML = ""; return; }
+
+  const reachable = reachableNodeIds();
+  const floorsHtml = runMap.floors.map((floor, floorIdx) => {
+    const nodesHtml = floor.map(node => {
+      const isCurrent   = node.id === runCurrentNodeId;
+      const isReachable = reachable.has(node.id);
+      const isVisited   = !isCurrent && !isReachable && node.floor <= (findNode(runMap!, runCurrentNodeId ?? "")?.floor ?? -1);
+      const cls = ["map-node"];
+      if (isCurrent) cls.push("map-node-current");
+      else if (isReachable) cls.push("map-node-reachable");
+      else if (isVisited) cls.push("map-node-visited");
+      const label = floorIdx === runMap!.floors.length - 1 ? "ボス" : NODE_TYPE_LABEL[node.type];
+      return `
+        <div class="${cls.join(" ")}" data-node-id="${node.id}">
+          <span class="map-node-emoji">${NODE_TYPE_EMOJI[node.type]}</span>
+          <span>${label}</span>
+        </div>
+      `;
+    }).join("");
+    return `<div class="map-floor-row" data-floor="${floorIdx}">${nodesHtml}</div>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div class="char-select-title">マップ</div>
+    <div class="map-floors">
+      <svg class="map-connections-svg" id="map-connections-svg"></svg>
+      ${floorsHtml}
+    </div>
+    <button class="char-back-btn" id="map-home-btn">🏠 メインメニューへ</button>
+  `;
+
+  el.querySelectorAll<HTMLElement>(".map-node.map-node-reachable").forEach(elNode => {
+    elNode.addEventListener("click", () => {
+      const id = elNode.dataset.nodeId!;
+      const node = findNode(runMap!, id);
+      if (node) enterNode(node);
+    });
+  });
+  document.getElementById("map-home-btn")!.addEventListener("click", showMenuScreen);
+
+  renderMapConnections();
+}
+
+// マップのノード間を線で結ぶ（DOM配置後の実座標から算出するため、renderMapScreen()の最後に呼ぶ）
+function renderMapConnections(): void {
+  if (!runMap) return;
+  const svg = document.getElementById("map-connections-svg") as unknown as SVGSVGElement | null;
+  const container = document.querySelector(".map-floors") as HTMLElement | null;
+  if (!svg || !container) return;
+
+  const containerRect = container.getBoundingClientRect();
+  svg.setAttribute("width", String(container.scrollWidth));
+  svg.setAttribute("height", String(container.scrollHeight));
+
+  const center = (id: string): { x: number; y: number } | null => {
+    const nodeEl = container.querySelector(`[data-node-id="${id}"]`) as HTMLElement | null;
+    if (!nodeEl) return null;
+    const r = nodeEl.getBoundingClientRect();
+    return { x: r.left + r.width / 2 - containerRect.left, y: r.top + r.height / 2 - containerRect.top };
+  };
+
+  const reachable = reachableNodeIds();
+  const lines: string[] = [];
+  for (const floor of runMap.floors) {
+    for (const node of floor) {
+      const from = center(node.id);
+      if (!from) continue;
+      for (const targetId of node.connections) {
+        const to = center(targetId);
+        if (!to) continue;
+        // 現在地から実際に進める接続だけ強調表示する
+        const isActive = node.id === runCurrentNodeId && reachable.has(targetId);
+        const cls = isActive ? "map-connection-line map-connection-active" : "map-connection-line";
+        lines.push(`<line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" class="${cls}" />`);
+      }
+    }
+  }
+  svg.innerHTML = lines.join("");
+}
+
+// ── パッケージマネージャ画面 ──────────────────────────────────────
+
+const PM_INSTALL_PRICE: Record<string, number> = { common: 3000, uncommon: 5000, rare: 8000 };
+const PM_DEAD_CODE_PRICE = 4500;
+const PM_REFACTOR_PRICE  = 4000;
+const PM_PLUGIN_PRICE    = 6000;
+
+let shopOffersForNodeId: string | null = null;
+let shopInstallOffers: CardId[] = [];
+
+function pickInstallOffers(char: CharacterDef): CardId[] {
+  const pickOne = (): CardId | null => {
+    const r = Math.random();
+    let pool: CardId[];
+    if (r < 0.7) pool = char.cardPool.common;
+    else if (r < 0.9) pool = char.cardPool.uncommon;
+    else pool = char.cardPool.rare;
+    if (pool.length === 0) pool = char.cardPool.common;
+    return pool[Math.floor(Math.random() * pool.length)] ?? null;
+  };
+  const offers: CardId[] = [];
+  for (let i = 0; i < 6; i++) {
+    const picked = pickOne();
+    if (picked) offers.push(picked);
+  }
+  return offers;
+}
+
+// リファクタリングの対象: スターター・Common・Uncommon・Rare（Fatalは対象外）
+function isRefactorEligible(id: CardId): boolean {
+  const def = CARDS[id];
+  return !!def && def.rarity !== "fatal";
+}
+
+function showPackageManagerScreen(): void {
+  hideAllTopScreens();
+  if (shopOffersForNodeId !== runCurrentNodeId) {
+    shopOffersForNodeId = runCurrentNodeId;
+    shopInstallOffers = pickInstallOffers(selectedCharacter);
+  }
+  renderPackageManagerScreen();
+  document.getElementById("package-manager-screen")!.classList.remove("hidden");
+}
+
+function renderPackageManagerScreen(): void {
+  const el = document.getElementById("package-manager-screen")!;
+  el.innerHTML = `
+    <span class="cash-label shop-byte-label">💰 ${runCash}</span>
+    <div class="char-select-title">📦 パッケージマネージャ</div>
+
+    <div class="shop-section-label">インストール（カード購入）</div>
+    <div id="pm-install-list" class="shop-lesson-list"></div>
+
+    <div class="shop-section-label">デッドコード削除（カード除去・${PM_DEAD_CODE_PRICE}）</div>
+    <div id="pm-remove-list" class="shop-lesson-list"></div>
+
+    <div class="shop-section-label">リファクタリング（カード強化・${PM_REFACTOR_PRICE}）</div>
+    <div id="pm-refactor-list" class="shop-lesson-list"></div>
+
+    <div class="shop-section-label">プラグイン購入（${PM_PLUGIN_PRICE}）</div>
+    <div id="pm-plugin-list" class="shop-lesson-list"></div>
+
+    <button class="char-back-btn" id="pm-back-btn">← マップに戻る</button>
+  `;
+
+  // インストール
+  const installEl = document.getElementById("pm-install-list")!;
+  shopInstallOffers.forEach((id, idx) => {
+    const def = CARDS[id];
+    if (!def) return;
+    const price = PM_INSTALL_PRICE[def.rarity] ?? PM_INSTALL_PRICE.common;
+    const row = document.createElement("div");
+    row.className = "shop-lesson-row";
+    row.innerHTML = `
+      <div class="shop-lesson-info">
+        <span class="shop-lesson-title">${def.signature}</span>
+        <span class="shop-lesson-req">${def.description}</span>
+      </div>
+      <div class="shop-lesson-actions">
+        <button class="widget-btn primary" ${runCash < price ? "disabled" : ""}>💰 ${price} で購入</button>
+      </div>
+    `;
+    row.querySelector("button")!.addEventListener("click", () => {
+      if (!trySpendCash(price)) return;
+      deckCards.push(id);
+      appendLog(`📦 インストール: 「${def.signature}」をデッキに追加`, "sys");
+      shopInstallOffers.splice(idx, 1);
+      renderPackageManagerScreen();
+    });
+    installEl.appendChild(row);
+  });
+  if (shopInstallOffers.length === 0) {
+    installEl.innerHTML = `<div class="shop-locked-note">在庫がありません</div>`;
+  }
+
+  // デッドコード削除
+  const removeEl = document.getElementById("pm-remove-list")!;
+  const uniqueDeckIds = [...new Set(deckCards)];
+  for (const id of uniqueDeckIds) {
+    const def = CARDS[id];
+    if (!def) continue;
+    const count = deckCards.filter(c => c === id).length;
+    const row = document.createElement("div");
+    row.className = "shop-lesson-row";
+    row.innerHTML = `
+      <div class="shop-lesson-info">
+        <span class="shop-lesson-title">${def.signature} ×${count}</span>
+        <span class="shop-lesson-req">${def.description}</span>
+      </div>
+      <div class="shop-lesson-actions">
+        <button class="widget-btn danger" ${runCash < PM_DEAD_CODE_PRICE ? "disabled" : ""}>🗑 ${PM_DEAD_CODE_PRICE} で削除</button>
+      </div>
+    `;
+    row.querySelector("button")!.addEventListener("click", () => {
+      if (!trySpendCash(PM_DEAD_CODE_PRICE)) return;
+      const idx = deckCards.indexOf(id);
+      if (idx !== -1) deckCards.splice(idx, 1);
+      appendLog(`🗑 デッドコード削除: 「${def.signature}」をデッキから削除`, "sys");
+      renderPackageManagerScreen();
+    });
+    removeEl.appendChild(row);
+  }
+  if (uniqueDeckIds.length === 0) {
+    removeEl.innerHTML = `<div class="shop-locked-note">対象のカードがありません</div>`;
+  }
+
+  // リファクタリング
+  const refactorEl = document.getElementById("pm-refactor-list")!;
+  const refactorCandidates = uniqueDeckIds.filter(id => isRefactorEligible(id) && !runUpgradedCardIds.includes(id));
+  for (const id of refactorCandidates) {
+    const def = CARDS[id];
+    if (!def) continue;
+    const upgradedDesc = CARD_UPGRADE_DESCRIPTIONS[id];
+    const row = document.createElement("div");
+    row.className = "shop-lesson-row refactor-row";
+    row.innerHTML = `
+      <div class="shop-lesson-main">
+        <div class="shop-lesson-info">
+          <span class="shop-lesson-title">${def.signature}</span>
+          <span class="shop-lesson-req">${def.description}</span>
+        </div>
+        <div class="shop-lesson-actions">
+          ${upgradedDesc ? `<button class="widget-btn refactor-preview-toggle">🔍 強化後を見る</button>` : ""}
+          <button class="widget-btn primary" ${runCash < PM_REFACTOR_PRICE ? "disabled" : ""}>🔧 ${PM_REFACTOR_PRICE} で強化</button>
+        </div>
+      </div>
+      ${upgradedDesc ? `<div class="refactor-preview hidden"><span class="refactor-preview-label">🔧 強化後</span><span class="refactor-preview-desc">${upgradedDesc}</span></div>` : ""}
+    `;
+    const previewToggle = row.querySelector(".refactor-preview-toggle");
+    const previewPanel = row.querySelector(".refactor-preview");
+    previewToggle?.addEventListener("click", () => {
+      previewPanel?.classList.toggle("hidden");
+      previewToggle.textContent = previewPanel?.classList.contains("hidden") ? "🔍 強化後を見る" : "🔼 閉じる";
+    });
+    row.querySelector("button.primary")!.addEventListener("click", () => {
+      if (!trySpendCash(PM_REFACTOR_PRICE)) return;
+      runUpgradedCardIds.push(id);
+      appendLog(`🔧 リファクタリング: 「${def.signature}」を強化`, "sys");
+      renderPackageManagerScreen();
+    });
+    refactorEl.appendChild(row);
+  }
+  if (refactorCandidates.length === 0) {
+    refactorEl.innerHTML = `<div class="shop-locked-note">対象のカードがありません</div>`;
+  }
+
+  // プラグイン購入
+  const pluginEl = document.getElementById("pm-plugin-list")!;
+  const availablePlugins = PLUGINS.filter(p => !runActivePluginIds.includes(p.id));
+  for (const plugin of availablePlugins) {
+    const row = document.createElement("div");
+    row.className = "shop-lesson-row";
+    row.innerHTML = `
+      <div class="shop-lesson-info">
+        <span class="shop-lesson-title">${plugin.name}</span>
+        <span class="shop-lesson-req">${plugin.description}</span>
+      </div>
+      <div class="shop-lesson-actions">
+        <button class="widget-btn primary" ${runCash < PM_PLUGIN_PRICE ? "disabled" : ""}>🔌 ${PM_PLUGIN_PRICE} で購入</button>
+      </div>
+    `;
+    row.querySelector("button")!.addEventListener("click", () => {
+      if (!trySpendCash(PM_PLUGIN_PRICE)) return;
+      grantPlugin(plugin.id);
+      appendLog(`🔌 プラグイン購入: 「${plugin.name}」`, "sys");
+      renderPackageManagerScreen();
+    });
+    pluginEl.appendChild(row);
+  }
+  if (availablePlugins.length === 0) {
+    pluginEl.innerHTML = `<div class="shop-locked-note">購入済みのプラグインしかありません</div>`;
+  }
+
+  document.getElementById("pm-back-btn")!.addEventListener("click", showMapScreen);
+}
+
+// ── 割り込み（イベント）画面 ──────────────────────────────────────
+
+function applyEventEffect(effect: EventOutcomeEffect): string {
+  switch (effect.kind) {
+    case "gainCash": {
+      runCash += effect.amount;
+      updateCashLabel();
+      return `キャッシュ +${effect.amount}`;
+    }
+    case "loseCash": {
+      runCash = Math.max(0, runCash - effect.amount);
+      updateCashLabel();
+      return `キャッシュ -${effect.amount}`;
+    }
+    case "gainPlugin": {
+      const candidates = PLUGINS.filter(p => !runActivePluginIds.includes(p.id));
+      if (candidates.length === 0) {
+        runCash += 1000;
+        updateCashLabel();
+        return "プラグインは全て所持済みのため、代わりにキャッシュ+1000";
+      }
+      const picked = candidates[Math.floor(Math.random() * candidates.length)];
+      grantPlugin(picked.id);
+      return `プラグイン「${picked.name}」を入手`;
+    }
+    case "loseHpPercent": {
+      const dmg = Math.floor(PLAYER_MAX_HP * (effect.percent / 100));
+      runPlayerHp = Math.max(1, runPlayerHp - dmg);
+      return `HP -${dmg}`;
+    }
+    case "refactorRandomCard": {
+      const candidates = [...new Set(deckCards)].filter(id => isRefactorEligible(id) && !runUpgradedCardIds.includes(id));
+      if (candidates.length === 0) return "強化できるカードがありませんでした";
+      const picked = candidates[Math.floor(Math.random() * candidates.length)];
+      runUpgradedCardIds.push(picked);
+      return `「${CARDS[picked]?.signature ?? picked}」を無料でリファクタリング`;
+    }
+    case "nextBattleEnergyPenalty":
+      pendingNextBattleEnergyPenalty = effect.amount;
+      return `次の戦闘のみMain Clock初期値-${effect.amount}`;
+    case "nextBattleEnemyIntentBoost":
+      pendingNextBattleIntentBoost = true;
+      return "次の戦闘の敵の最初の意図が強化される";
+    case "none":
+      return "何も起きなかった";
+  }
+}
+
+function showEventScreen(): void {
+  hideAllTopScreens();
+  renderEventScreen();
+  document.getElementById("event-screen")!.classList.remove("hidden");
+}
+
+function renderEventScreen(): void {
+  const el = document.getElementById("event-screen")!;
+  const node = runMap ? findNode(runMap, runCurrentNodeId ?? "") : undefined;
+  const def = node?.eventId ? getEvent(node.eventId) : undefined;
+  if (!def) { el.innerHTML = ""; return; }
+
+  el.innerHTML = `
+    <div class="char-select-title">❓ ${def.title}</div>
+    <div class="shop-lesson-list" style="max-width:520px; text-align:center; color:var(--muted);">${def.description}</div>
+    <div id="event-choices" class="shop-lesson-list"></div>
+  `;
+
+  const choicesEl = document.getElementById("event-choices")!;
+  def.choices.forEach((choice, idx) => {
+    const row = document.createElement("div");
+    row.className = "shop-lesson-row";
+    row.innerHTML = `
+      <div class="shop-lesson-info">
+        <span class="shop-lesson-title">${choice.label}</span>
+        <span class="shop-lesson-req">${choice.hint}</span>
+      </div>
+      <div class="shop-lesson-actions">
+        <button class="widget-btn primary" data-choice="${idx}">選ぶ</button>
+      </div>
+    `;
+    choicesEl.appendChild(row);
+  });
+
+  choicesEl.querySelectorAll<HTMLButtonElement>("button[data-choice]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const choice = def.choices[Number(btn.dataset.choice)];
+      const outcome = rollOutcome(choice);
+      const results = outcome.effects.map(applyEventEffect);
+      choicesEl.innerHTML = `
+        <div class="shop-lesson-row" style="justify-content:center;">
+          <div class="shop-lesson-info" style="text-align:center;">
+            <span class="shop-lesson-title">${results.join(" / ")}</span>
+          </div>
+        </div>
+        <button class="char-back-btn" id="event-continue-btn">→ マップに戻る</button>
+      `;
+      document.getElementById("event-continue-btn")!.addEventListener("click", showMapScreen);
+    });
   });
 }
 
@@ -1564,7 +2080,6 @@ function buildCharSelectScreen(): void {
       card.addEventListener("click", () => {
         selectedCharacter = char;
         PLAYER_MAX_HP = char.hp;
-        showGameScreen();
         startGame(char.id);
       });
     }
@@ -1587,6 +2102,11 @@ function startGame(characterId: string): void {
   runStartTime      = Date.now();
   runCash           = 0;
   runByteEarned     = 0;
+  runActivePluginIds = [];
+  runUpgradedCardIds = [];
+  runMap            = generateMap(EVENTS.map(e => e.id));
+  runCurrentNodeId  = null;
+  resetRunLog();
   updateCashLabel();
   hideOverlay();
   closeRewardModal();
@@ -1596,7 +2116,7 @@ function startGame(characterId: string): void {
   // エラー表示のクリアのみ（エディタはリセットしない）
   entries.forEach(e => { e.errorEl.textContent = ""; });
 
-  startBattle();
+  showMapScreen();
 }
 
 // ── チュートリアル ──────────────────────────────────────────────────
@@ -1877,10 +2397,22 @@ function rollRngSeed(): number {
 async function startBattleInner(): Promise<void> {
   const stage = activeStages[currentStageIndex];
   currentIntentIndex = 0;
-  const firstIntent = stage.intentPattern[0] ?? { kind: "attack", value: 6 };
+  let firstIntent = stage.intentPattern[0] ?? { kind: "attack", value: 6 };
+  if (pendingNextBattleIntentBoost) {
+    firstIntent = { ...firstIntent, value: Math.round(firstIntent.value * 1.5), boosted: true };
+    pendingNextBattleIntentBoost = false;
+  }
+
+  const bonusMaxEnergy     = pluginBonus("maxEnergy");
+  const bonusMaxDaemonCost = pluginBonus("maxDaemonCost");
+  const bonusStartBlock    = pluginBonus("startingBlock");
+  const bonusComboIncrement = pluginBonus("comboIncrementBonus");
+  const bonusExtraDraw     = pluginBonus("extraDrawPerTurn");
+  const energyPenalty = pendingNextBattleEnergyPenalty ?? 0;
+  pendingNextBattleEnergyPenalty = null;
 
   state = {
-    player: { hp: runPlayerHp, maxHp: PLAYER_MAX_HP, block: 0 },
+    player: { hp: runPlayerHp, maxHp: PLAYER_MAX_HP, block: bonusStartBlock },
     enemy: {
       hp:         stage.hp,
       maxHp:      stage.hp,
@@ -1890,12 +2422,12 @@ async function startBattleInner(): Promise<void> {
       intent:     { ...firstIntent },
       ...rollWeakness(),
     },
-    energy:    MAX_ENERGY,
-    maxEnergy: MAX_ENERGY,
+    energy:    Math.max(0, MAX_ENERGY + bonusMaxEnergy - energyPenalty),
+    maxEnergy: MAX_ENERGY + bonusMaxEnergy,
     turn:      1,
     rebootUsedThisTurn: false,
     comboCount: 0,
-    comboIncrement: 1,
+    comboIncrement: 1 + bonusComboIncrement,
     asyncAwaitActive: false,
     nextTurnExtraDraws: 0,
     nextTurnExtraEnergy: 0,
@@ -1904,8 +2436,8 @@ async function startBattleInner(): Promise<void> {
     costReductionMap: {},
     cachedCardId: null,
     characterId: selectedCharacter.id,
-    daemonCost: MAX_DAEMON_COST,
-    maxDaemonCost: MAX_DAEMON_COST,
+    daemonCost: MAX_DAEMON_COST + bonusMaxDaemonCost,
+    maxDaemonCost: MAX_DAEMON_COST + bonusMaxDaemonCost,
     damageDealtThisTurn: 0,
     sameActionKind: null,
     sameActionStreak: 0,
@@ -1923,9 +2455,13 @@ async function startBattleInner(): Promise<void> {
     seedLockRemaining: 0,
     rngSeedFreezeSnapshot: 0,
     oddsBoostActive: false,
+    oddsBoostBonus: 0.2,
     insuranceActive: false,
     lastGambleCardId: null,
     lastGambleAmount: 0,
+    upgradedCardIds: [...runUpgradedCardIds],
+    extraDrawPerTurn: bonusExtraDraw,
+    baseComboIncrement: 1 + bonusComboIncrement,
   };
   deck = new Deck([...deckCards]);
   over = false;
@@ -2237,6 +2773,7 @@ async function finish(win: boolean): Promise<void> {
   over = true;
   busy = false;
   setAllRunButtons(false);
+  entries.forEach(e => { e.autorun = false; updateAutoBtn(e); }); // 勝敗確定時はAUTOを明示的に止める
   render(state, deck);
 
   if (!win) {
@@ -2254,8 +2791,8 @@ async function finish(win: boolean): Promise<void> {
       const totalBytes = loadTotalBytes();
       appendLog(`💾 バイト +${runByteEarned}（累計 ${totalBytes}）`, "sys");
     }
-    showOverlay("💀 GAME OVER");
     recordGameOver(selectedCharacter.id);
+    showRunResultModal(false);
     return;
   }
 
@@ -2272,8 +2809,8 @@ async function finish(win: boolean): Promise<void> {
   let cashEarned = 0;
   if (!tutorialMode) {
     const clearedStage = activeStages[currentStageIndex];
-    cashEarned = jitterReward(clearedStage.cashReward!, CASH_JITTER);
-    const byteEarned = jitterReward(clearedStage.byteReward!, BYTE_JITTER);
+    cashEarned = Math.round(jitterReward(clearedStage.cashReward!, CASH_JITTER) * (1 + pluginBonus("cashMultiplier")));
+    const byteEarned = Math.round(jitterReward(clearedStage.byteReward!, BYTE_JITTER) * (1 + pluginBonus("byteMultiplier")));
     runCash += cashEarned;
     runByteEarned += byteEarned;
     addBytes(byteEarned);
@@ -2281,7 +2818,12 @@ async function finish(win: boolean): Promise<void> {
     appendLog(`💰 キャッシュ +${cashEarned}`, "sys");
   }
 
-  if (currentStageIndex >= totalStages() - 1) {
+  // チュートリアルは既存の一本道（totalStages）、通常プレイはマップ上のbossノードクリアで判定する
+  const isRunEnd = tutorialMode
+    ? currentStageIndex >= totalStages() - 1
+    : runCurrentNodeId === "boss";
+
+  if (isRunEnd) {
     if (tutorialMode) {
       appendLog(TUTORIAL_COMPLETE_LOG, "sys");
       showOverlay(TUTORIAL_COMPLETE_OVERLAY);
@@ -2296,12 +2838,12 @@ async function finish(win: boolean): Promise<void> {
     const totalBytes = loadTotalBytes();
     appendLog(`💾 バイト +${runByteEarned}（うちボス撃破ボーナス +${BOSS_CLEAR_BONUS}）（累計 ${totalBytes}）`, "sys");
     appendLog("🏆 全ステージクリア！", "sys");
-    showOverlay("🏆 CLEAR!");
     recordClear(selectedCharacter.id, Date.now() - runStartTime);
+    showRunResultModal(true);
     return;
   }
 
-  currentStageIndex++;
+  if (tutorialMode) currentStageIndex++; // マップモードでは次のcurrentStageIndexはノード選択時に決まる
 
   const victoryLines = [`✅ ${clearedStageName} を倒した！`, `💊 HP +${healed} 回復 → ${runPlayerHp}`];
   if (!tutorialMode) victoryLines.push(`💰 キャッシュ +${cashEarned}`);
@@ -2323,7 +2865,7 @@ async function finish(win: boolean): Promise<void> {
         } else {
           appendLog("スキップ", "sys");
         }
-        startBattle();
+        showMapScreen();
       });
     },
   );
@@ -2761,6 +3303,7 @@ buildRewardModal();
 buildVictoryModal();
 buildPresetModal();
 buildStatsModal();
+buildRunResultModal();
 buildTutorialModal();
 buildReferenceModal();
 buildLessonContentModal();
@@ -2812,6 +3355,47 @@ if (import.meta.env.DEV) {
   w.__hand            = () => deck?.hand;
   w.__skipToStage     = (i: number) => { currentStageIndex = i; startBattle(); };
   w.__entries         = () => entries;
+  w.__runMap          = () => runMap;
+  w.__runCurrentNodeId = () => runCurrentNodeId;
+  w.__addCash         = (n: number) => { runCash += n; updateCashLabel(); };
+  // reachability無視で任意のノードへ強制的に入る（マップ機能のデバッグ用）
+  w.__forceEnterNode  = (id: string) => {
+    if (!runMap) return;
+    const node = findNode(runMap, id);
+    if (!node) return;
+    runCurrentNodeId = id;
+    if (node.type === "shop") showPackageManagerScreen();
+    else if (node.type === "event") showEventScreen();
+    else { currentStageIndex = node.stageIndex!; showGameScreen(); startBattle(); }
+  };
+  // Monacoエディタを介さずコードを直接実行し、この呼び出しで増えたバトルログだけを返す
+  // （カード効果の動作確認用。DevToolsコンソールから `await __runCode("attack();")` のように使う）
+  w.__runCode = async (code: string): Promise<Array<{ text: string; cls: string }>> => {
+    const entry = entries[0];
+    if (!entry) return [];
+    const before = getRunLog().length;
+    setCode(entry.editor, code);
+    await onRun(entry);
+    return [...getRunLog()].slice(before);
+  };
+  // コスト0で敵に大ダメージを与える（デバッグ用。ボス撃破後の演出・勝利フローの確認などに使う）
+  w.__megaAttack = (dmg = 10000) => {
+    if (!state || over) return;
+    const before = state.enemy.hp;
+    state.enemy.hp = Math.max(0, state.enemy.hp - dmg);
+    const dealt = before - state.enemy.hp;
+    appendLog(`💀 [DEV] 最強アタック: 敵に ${dealt} ダメージ（コスト0）`, "dmg");
+    render(state, deck, getDisabledCards());
+    if (state.enemy.hp <= 0) finish(true);
+  };
+  // 現在の主要な数値状態をまとめて返す（__runCode前後の差分確認用）
+  w.__snapshot = () => state ? {
+    mainClock: state.energy, maxMainClock: state.maxEnergy,
+    hp: state.player.hp, maxHp: state.player.maxHp,
+    storedValue: state.storedValue, comboCount: state.comboCount,
+    enemyHp: state.enemy.hp,
+    hand: deck?.hand.map(id => CARDS[id]?.fn ?? id) ?? [],
+  } : null;
 
   const hudEl = document.getElementById("hud")!;
   const unlockBtn = document.createElement("button");

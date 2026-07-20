@@ -1,5 +1,5 @@
 import type { CombatState } from "../game/state";
-import { CARDS, type CardId } from "../game/cards";
+import { CARDS, CARD_UPGRADE_DESCRIPTIONS, type CardId } from "../game/cards";
 import type { Deck } from "../game/deck";
 import type { StageGimmick } from "../game/stages";
 
@@ -141,7 +141,7 @@ export function render(state: CombatState, deck: Deck, disabledCards?: Set<CardI
   if (eTextEl) eTextEl.textContent = `${state.energy} / ${state.maxEnergy}`;
 
   // デッキ
-  renderHand(deck.hand, disabledCards, state.costZeroCardIds, flashingCardId);
+  renderHand(deck.hand, disabledCards, state.costZeroCardIds, flashingCardId, state.upgradedCardIds);
   const handCountEl    = $$("hand-count");
   if (handCountEl)    handCountEl.textContent    = String(deck.hand.length);
   const discardCountEl = $$("discard-count");
@@ -150,7 +150,7 @@ export function render(state: CombatState, deck: Deck, disabledCards?: Set<CardI
   if (drawCountEl)    drawCountEl.textContent    = String(deck.drawPile.length);
 }
 
-function renderHand(hand: CardId[], disabledCards?: Set<CardId>, costZeroCardIds?: string[], flashingCardId?: CardId): void {
+function renderHand(hand: CardId[], disabledCards?: Set<CardId>, costZeroCardIds?: string[], flashingCardId?: CardId, upgradedCardIds?: string[]): void {
   const handEl = $$("hand");
   if (!handEl) return;
   const counts = new Map<CardId, number>();
@@ -162,8 +162,10 @@ function renderHand(hand: CardId[], disabledCards?: Set<CardId>, costZeroCardIds
     if (!def) continue;
     const disabled = disabledCards?.has(id) ?? false;
     const isCostZero = costZeroCardIds?.includes(id) ?? false;
+    const isUpgraded = upgradedCardIds?.includes(id) ?? false;
+    const description = (isUpgraded && CARD_UPGRADE_DESCRIPTIONS[id]) || def.description;
     const card     = document.createElement("div");
-    card.className = "card" + (disabled ? " card-disabled" : "") + (id === flashingCardId ? " card-flash" : "");
+    card.className = "card" + (disabled ? " card-disabled" : "") + (id === flashingCardId ? " card-flash" : "") + (isUpgraded ? " card-upgraded" : "");
     card.dataset.rarity = def.rarity;
     card.dataset.cardId = id;
     card.title     = disabled ? "このターンすでに使用済み" : "クリックでエディタに挿入";
@@ -173,11 +175,11 @@ function renderHand(hand: CardId[], disabledCards?: Set<CardId>, costZeroCardIds
     card.innerHTML = `
       <div class="card-header-row">
         <span class="rarity-badge rarity-${def.rarity}" title="${def.rarity}"></span>
-        <span class="sig">${def.signature}</span>
+        <span class="sig">${def.signature}${isUpgraded ? ' <span class="upgraded-badge">🔧</span>' : ""}</span>
         <span class="cost">×${count}${isCostZero ? " <span class='cost-zero'>0</span>" : ""}</span>
         ${attrTags}
       </div>
-      <div class="desc">${def.description}</div>
+      <div class="desc">${description}</div>
       ${disabled ? '<div class="card-disabled-overlay">🚫</div>' : ""}`;
     if (!disabled) {
       card.addEventListener("click", () =>
@@ -188,7 +190,7 @@ function renderHand(hand: CardId[], disabledCards?: Set<CardId>, costZeroCardIds
   }
 }
 
-export function renderPileCards(pile: CardId[]): DocumentFragment {
+export function renderPileCards(pile: CardId[], upgradedCardIds?: string[]): DocumentFragment {
   const frag = document.createDocumentFragment();
   if (pile.length === 0) {
     const empty = document.createElement("div");
@@ -202,8 +204,10 @@ export function renderPileCards(pile: CardId[]): DocumentFragment {
   for (const [id, count] of counts) {
     const def  = CARDS[id];
     if (!def) continue;
+    const isUpgraded = upgradedCardIds?.includes(id) ?? false;
+    const description = (isUpgraded && CARD_UPGRADE_DESCRIPTIONS[id]) || def.description;
     const card = document.createElement("div");
-    card.className = "card";
+    card.className = "card" + (isUpgraded ? " card-upgraded" : "");
     card.dataset.rarity = def.rarity;
     const pAttrTags = def.attributes.map(a =>
       `<span class="attr-tag attr-${a}">${a === "unique" ? "Unique" : "Disp"}</span>`
@@ -211,11 +215,11 @@ export function renderPileCards(pile: CardId[]): DocumentFragment {
     card.innerHTML = `
       <div class="card-header-row">
         <span class="rarity-badge rarity-${def.rarity}" title="${def.rarity}"></span>
-        <span class="sig">${def.signature}</span>
+        <span class="sig">${def.signature}${isUpgraded ? ' <span class="upgraded-badge">🔧</span>' : ""}</span>
         <span class="cost">×${count}</span>
         ${pAttrTags}
       </div>
-      <div class="desc">${def.description}</div>`;
+      <div class="desc">${description}</div>`;
     card.addEventListener("click", () =>
       window.dispatchEvent(new CustomEvent("insert-snippet", { detail: def.signature }))
     );
@@ -241,7 +245,12 @@ export function setDeckCount(n: number): void {
   if (el) el.textContent = String(n);
 }
 
+// ラン全体のログ履歴（クリア/ゲームオーバー画面での振り返り用）。
+// clearLog()は戦闘ウィジェットの表示だけを消し、こちらはresetRunLog()（ラン開始時）まで蓄積し続ける。
+const runLogEntries: Array<{ text: string; cls: string }> = [];
+
 export function appendLog(text: string, cls: "dmg" | "heal" | "sys" | "err" = "sys"): void {
+  runLogEntries.push({ text, cls });
   const log = $$("log");
   if (!log) return;
   const line = document.createElement("div");
@@ -254,6 +263,14 @@ export function appendLog(text: string, cls: "dmg" | "heal" | "sys" | "err" = "s
 export function clearLog(): void {
   const log = $$("log");
   if (log) log.innerHTML = "";
+}
+
+export function resetRunLog(): void {
+  runLogEntries.length = 0;
+}
+
+export function getRunLog(): ReadonlyArray<{ text: string; cls: string }> {
+  return runLogEntries;
 }
 
 export function appendConsoleLog(lines: string[]): void {

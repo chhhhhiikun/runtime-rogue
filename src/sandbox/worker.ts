@@ -161,6 +161,9 @@ function run(req: RunRequest): RunResult {
     return Math.max(0, baseCost - reduction);
   };
 
+  // パッケージマネージャ「リファクタリング」でこのCardIdが強化済みかどうか（ラン単位で持続）
+  const isUpgraded = (id: CardId): boolean => state.upgradedCardIds.includes(id);
+
   const drawCards = (n: number): void => {
     for (let i = 0; i < n; i++) {
       if (runtimeDrawPile.length === 0) {
@@ -216,6 +219,7 @@ function run(req: RunRequest): RunResult {
       ...a,
       cardId: lastCheckedCardId ?? undefined,
       sourceLine: captureSourceLine(),
+      upgraded: lastCheckedCardId ? isUpgraded(lastCheckedCardId) : undefined,
     };
     if (execMode === "daemon") {
       if (cost > state.daemonCost) {
@@ -452,7 +456,7 @@ function run(req: RunRequest): RunResult {
   const lrLib: Record<string, (...args: unknown[]) => void> = {
     initialize: () => {
       checkInHand("initialize");
-      const cost = effectiveCost("initialize", 1);
+      const cost = effectiveCost("initialize", isUpgraded("initialize") ? 0 : 1);
       record({ kind: "initialize", cost }, "initialize()");
       addCombo();
     },
@@ -462,6 +466,7 @@ function run(req: RunRequest): RunResult {
       const cost = effectiveCost("noop", 0);
       record({ kind: "noop", cost }, "noop()");
       addCombo();
+      if (isUpgraded("noop")) drawCards(1);
     },
     forceQuit: () => {
       checkInHand("forceQuit");
@@ -473,16 +478,18 @@ function run(req: RunRequest): RunResult {
     overClock: () => {
       checkInHand("overClock");
       const cost = effectiveCost("overClock", 0);
+      const upgraded = isUpgraded("overClock");
+      const energyGain = upgraded ? 2 : 1;
       // Apply effects directly then record with cost 0
       state.player.hp = Math.max(0, state.player.hp - 2);
-      state.energy = Math.min(state.maxEnergy, state.energy + 1 - cost); // cost already 0
+      state.energy = Math.min(state.maxEnergy, state.energy + energyGain - cost); // cost already 0
       // Use a reboot-like approach: record the action manually
-      actions.push({ kind: "overClock", cost });
+      actions.push({ kind: "overClock", cost, upgraded, cardId: "overClock" as CardId });
       addCombo();
     },
     incrementalAttack: () => {
       checkInHand("incrementalAttack");
-      const cost = effectiveCost("incrementalAttack", 2);
+      const cost = effectiveCost("incrementalAttack", isUpgraded("incrementalAttack") ? 1 : 2);
       record({ kind: "incrementalAttack", cost, comboCount: state.comboCount }, "incrementalAttack()");
       addCombo();
     },
@@ -496,7 +503,7 @@ function run(req: RunRequest): RunResult {
     incrementalBlock: () => {
       checkInHand("incrementalBlock");
       checkUnique("incrementalBlock");
-      const cost = effectiveCost("incrementalBlock", 2);
+      const cost = effectiveCost("incrementalBlock", isUpgraded("incrementalBlock") ? 1 : 2);
       record({ kind: "incrementalBlock", cost, comboCount: state.comboCount }, "incrementalBlock()");
       addCombo();
     },
@@ -514,7 +521,7 @@ function run(req: RunRequest): RunResult {
     },
     asyncDraw: () => {
       checkInHand("asyncDraw");
-      const cost = effectiveCost("asyncDraw", 1);
+      const cost = effectiveCost("asyncDraw", isUpgraded("asyncDraw") ? 0 : 1);
       record({ kind: "asyncDraw", cost }, "asyncDraw()");
       addCombo();
       drawCards(2);
@@ -522,7 +529,7 @@ function run(req: RunRequest): RunResult {
     stackOverflow: () => {
       checkInHand("stackOverflow");
       checkUnique("stackOverflow");
-      const cost = effectiveCost("stackOverflow", 2);
+      const cost = effectiveCost("stackOverflow", isUpgraded("stackOverflow") ? 1 : 2);
       record({ kind: "stackOverflow", cost }, "stackOverflow()");
       addCombo();
     },
@@ -580,7 +587,8 @@ function run(req: RunRequest): RunResult {
     if (availableSource().includes("obAttack")) {
       checkInHand("obAttack");
       const cost = effectiveCost("obAttack", 2);
-      record({ kind: "attack", amount: 5, cost }, "attack()");
+      const amount = isUpgraded("obAttack") ? 7 : 5;
+      record({ kind: "attack", amount, cost }, "attack()");
       addCombo();
     } else {
       legacyLib.attack!(0);
@@ -591,7 +599,8 @@ function run(req: RunRequest): RunResult {
     if (availableSource().includes("obBlock")) {
       checkInHand("obBlock");
       const cost = effectiveCost("obBlock", 2);
-      record({ kind: "block", amount: 6, cost }, "block()");
+      const amount = isUpgraded("obBlock") ? 8 : 6;
+      record({ kind: "block", amount, cost }, "block()");
       addCombo();
     } else {
       legacyLib.block!(0);
@@ -648,20 +657,20 @@ function run(req: RunRequest): RunResult {
     },
     store: () => {
       checkInHand("store");
-      const cost = effectiveCost("store", 2);
+      const cost = effectiveCost("store", isUpgraded("store") ? 1 : 2);
       record({ kind: "store", cost }, "store()");
       addCombo();
     },
     release: () => {
       checkInHand("release");
-      const cost = effectiveCost("release", 1);
+      const cost = effectiveCost("release", isUpgraded("release") ? 0 : 1);
       record({ kind: "release", cost }, "release()");
       addCombo();
       state.releasedThisTurn = true;
     },
     compact: () => {
       checkInHand("compact");
-      const cost = effectiveCost("compact", 1);
+      const cost = effectiveCost("compact", isUpgraded("compact") ? 0 : 1);
       record({ kind: "compact", cost }, "compact()");
       addCombo();
       state.releasedThisTurn = true;
@@ -675,14 +684,14 @@ function run(req: RunRequest): RunResult {
     },
     fortify: () => {
       checkInHand("fortify");
-      const cost = effectiveCost("fortify", 1);
+      const cost = effectiveCost("fortify", isUpgraded("fortify") ? 0 : 1);
       record({ kind: "fortify", cost }, "fortify()");
       addCombo();
     },
     double: () => {
       checkInHand("double");
       checkUnique("double");
-      const cost = effectiveCost("double", 3);
+      const cost = effectiveCost("double", isUpgraded("double") ? 2 : 3);
       record({ kind: "double", cost }, "double()");
       addCombo();
     },
@@ -701,14 +710,14 @@ function run(req: RunRequest): RunResult {
     surge: () => {
       checkInHand("surge");
       checkUnique("surge");
-      const cost = effectiveCost("surge", 2);
+      const cost = effectiveCost("surge", isUpgraded("surge") ? 1 : 2);
       record({ kind: "surge", cost }, "surge()");
       addCombo();
     },
     bigRelease: () => {
       checkInHand("bigRelease");
       checkUnique("bigRelease");
-      const cost = effectiveCost("bigRelease", 4);
+      const cost = effectiveCost("bigRelease", isUpgraded("bigRelease") ? 3 : 4);
       record({ kind: "bigRelease", cost }, "bigRelease()");
       addCombo();
       state.releasedThisTurn = true;
@@ -717,7 +726,8 @@ function run(req: RunRequest): RunResult {
       checkInHand("ironWall");
       checkUnique("ironWall");
       const cost = effectiveCost("ironWall", 3);
-      record({ kind: "block", amount: 14, cost }, "ironWall()");
+      const amount = isUpgraded("ironWall") ? 18 : 14;
+      record({ kind: "block", amount, cost }, "ironWall()");
       addCombo();
     },
     singularity: () => {
@@ -822,46 +832,49 @@ function run(req: RunRequest): RunResult {
     debug: () => {
       checkInHand("debug");
       checkUnique("debug");
-      const cost = effectiveCost("debug", 1);
+      const cost = effectiveCost("debug", isUpgraded("debug") ? 0 : 1);
       record({ kind: "debug", cost }, "debug()");
       addCombo();
       const wg = req.weaknessGimmick;
-      const extra = wg?.kind === "logBloat"
+      const bloatExtra = wg?.kind === "logBloat"
         ? Math.max(0, state.turn - wg.turnThreshold) * wg.growthPerTurn
         : 0;
+      const extra = bloatExtra;
       return generateWeaknessLog(state.enemy.weakness, state.enemy.edgeWeakness, extra);
     },
-    throwTypeError: () => weaknessAttackFn("throwTypeError", "TypeError", "weakness", 12, 5, 2),
-    throwRangeError: () => weaknessAttackFn("throwRangeError", "RangeError", "weakness", 12, 5, 2),
-    throwSyntaxError: () => weaknessAttackFn("throwSyntaxError", "SyntaxError", "weakness", 12, 5, 2),
+    throwTypeError: () => weaknessAttackFn("throwTypeError", "TypeError", "weakness", isUpgraded("throwTypeError") ? 16 : 12, isUpgraded("throwTypeError") ? 6 : 5, 2),
+    throwRangeError: () => weaknessAttackFn("throwRangeError", "RangeError", "weakness", isUpgraded("throwRangeError") ? 16 : 12, isUpgraded("throwRangeError") ? 6 : 5, 2),
+    throwSyntaxError: () => weaknessAttackFn("throwSyntaxError", "SyntaxError", "weakness", isUpgraded("throwSyntaxError") ? 16 : 12, isUpgraded("throwSyntaxError") ? 6 : 5, 2),
     hotfix: () => {
       checkInHand("hotfix");
       const cost = effectiveCost("hotfix", 0);
-      record({ kind: "heal", amount: 3, cost }, "hotfix()");
+      const amount = isUpgraded("hotfix") ? 6 : 3;
+      record({ kind: "heal", amount, cost }, "hotfix()");
       addCombo();
       disposeCard("hotfix");
     },
     firewall: () => {
       checkInHand("firewall");
       const cost = effectiveCost("firewall", 2);
-      record({ kind: "block", amount: 9, cost }, "firewall()");
+      const amount = isUpgraded("firewall") ? 12 : 9;
+      record({ kind: "block", amount, cost }, "firewall()");
       addCombo();
     },
     stackTrace: () => {
       checkInHand("stackTrace");
-      const cost = effectiveCost("stackTrace", 1);
+      const cost = effectiveCost("stackTrace", isUpgraded("stackTrace") ? 0 : 1);
       record({ kind: "asyncDraw", cost }, "stackTrace()");
       addCombo();
       drawCards(2);
     },
-    raiseException: (type) => weaknessAttackFn("raiseException", type, "weakness", 21, 8, 3),
-    errorBoundary: (type) => weaknessBlockFn("errorBoundary", type, 16, 8, 3),
-    coreDump: (type) => weaknessAttackFn("coreDump", type, "weakness", 36, 10, 4),
-    edgeCase: (type) => weaknessAttackFn("edgeCase", type, "edgeWeakness", 40, 10, 4),
+    raiseException: (type) => weaknessAttackFn("raiseException", type, "weakness", isUpgraded("raiseException") ? 26 : 21, isUpgraded("raiseException") ? 10 : 8, 3),
+    errorBoundary: (type) => weaknessBlockFn("errorBoundary", type, isUpgraded("errorBoundary") ? 20 : 16, isUpgraded("errorBoundary") ? 10 : 8, 3),
+    coreDump: (type) => weaknessAttackFn("coreDump", type, "weakness", isUpgraded("coreDump") ? 45 : 36, isUpgraded("coreDump") ? 13 : 10, 4),
+    edgeCase: (type) => weaknessAttackFn("edgeCase", type, "edgeWeakness", isUpgraded("edgeCase") ? 50 : 40, isUpgraded("edgeCase") ? 13 : 10, 4),
     hotReload: () => {
       checkInHand("hotReload");
       checkUnique("hotReload");
-      const cost = effectiveCost("hotReload", 2);
+      const cost = effectiveCost("hotReload", isUpgraded("hotReload") ? 1 : 2);
       record({ kind: "hotReload", cost }, "hotReload()");
       addCombo();
       drawCards(3);
@@ -879,7 +892,8 @@ function run(req: RunRequest): RunResult {
     if (availableSource().includes("biAttack")) {
       checkInHand("biAttack");
       const cost = effectiveCost("biAttack", 2);
-      record({ kind: "attack", amount: 5, cost }, "attack()");
+      const amount = isUpgraded("biAttack") ? 7 : 5;
+      record({ kind: "attack", amount, cost }, "attack()");
       addCombo();
     } else {
       legacyLib.attack!(0);
@@ -890,7 +904,8 @@ function run(req: RunRequest): RunResult {
     if (availableSource().includes("biBlock")) {
       checkInHand("biBlock");
       const cost = effectiveCost("biBlock", 2);
-      record({ kind: "block", amount: 6, cost }, "block()");
+      const amount = isUpgraded("biBlock") ? 8 : 6;
+      record({ kind: "block", amount, cost }, "block()");
       addCombo();
     } else {
       legacyLib.block!(0);
@@ -921,7 +936,7 @@ function run(req: RunRequest): RunResult {
   const resolveGambleRoll = (baseThreshold: number): { success: boolean; insuranceUsed: boolean } => {
     let threshold = baseThreshold;
     if (state.oddsBoostActive) {
-      threshold = Math.min(1, threshold + 0.2);
+      threshold = Math.min(1, threshold + state.oddsBoostBonus);
       state.oddsBoostActive = false;
     }
     const rolled = advanceSeed() / LCG_MODULUS;
@@ -942,10 +957,14 @@ function run(req: RunRequest): RunResult {
 
   const gambleActionFn = (
     cardId: CardId, kind: "attack" | "block", threshold: number,
-    successAmt: number, failAmt: number, baseCost: number,
+    successAmtBase: number, failAmtBase: number, baseCost: number,
   ): void => {
     checkInHand(cardId);
     const cost = effectiveCost(cardId, baseCost);
+    // リファクタリング済み: 成功/失敗どちらの数値も底上げする（コスト3のカードほど上げ幅を大きく）
+    const bonus = isUpgraded(cardId) ? (baseCost >= 3 ? 4 : 2) : 0;
+    const successAmt = successAmtBase + bonus;
+    const failAmt = failAmtBase + bonus;
     const { success, insuranceUsed } = resolveGambleRoll(threshold);
     let amount = success ? successAmt : failAmt;
     if (insuranceUsed) amount = Math.round((successAmt + failAmt) / 2);
@@ -970,19 +989,20 @@ function run(req: RunRequest): RunResult {
       record({ kind: "skipRoll", cost }, "skipRoll()");
       addCombo();
       advanceSeed();
+      if (isUpgraded("skipRoll")) advanceSeed(); // リファクタリング済み: 1回で2ステップ進む
     },
     doubleDown: () => gambleActionFn("doubleDown", "attack", 0.4, 18, 4, 3),
     riskyGuard: () => gambleActionFn("riskyGuard", "block", 0.4, 20, 5, 3),
     insurance: () => {
       checkInHand("insurance");
-      const cost = effectiveCost("insurance", 1);
+      const cost = effectiveCost("insurance", isUpgraded("insurance") ? 0 : 1);
       record({ kind: "insurance", cost }, "insurance()");
       addCombo();
       state.insuranceActive = true;
     },
     retryRoll: () => {
       checkInHand("retryRoll");
-      const cost = effectiveCost("retryRoll", 1);
+      const cost = effectiveCost("retryRoll", isUpgraded("retryRoll") ? 0 : 1);
       record({ kind: "retryRoll", cost }, "retryRoll()");
       addCombo();
       const cfg = state.lastGambleCardId ? GAMBLE_CARD_CONFIG[state.lastGambleCardId] : undefined;
@@ -994,9 +1014,12 @@ function run(req: RunRequest): RunResult {
       const revertAction: Action = { kind: "gambleRevert", gambleKind: cfg.kind, amount: state.lastGambleAmount, cost: 0 };
       applyAction(state, revertAction);
       actions.push(revertAction);
-      // 新しいseedで撃ち直す
+      // 新しいseedで撃ち直す（リファクタリング済みなら、gambleActionFnと同じ上乗せを適用する）
+      const bonus = isUpgraded(state.lastGambleCardId as CardId)
+        ? (getCardBaseCost(state.lastGambleCardId as CardId) >= 3 ? 4 : 2)
+        : 0;
       const { success } = resolveGambleRoll(cfg.threshold);
-      const amount = success ? cfg.successAmt : cfg.failAmt;
+      const amount = (success ? cfg.successAmt : cfg.failAmt) + bonus;
       state.lastGambleAmount = amount;
       const rerollAction: Action = cfg.kind === "attack"
         ? { kind: "gambleAttack", success, dmg: amount, cost: 0 }
@@ -1010,10 +1033,11 @@ function run(req: RunRequest): RunResult {
       record({ kind: "oddsBoost", cost }, "oddsBoost()");
       addCombo();
       state.oddsBoostActive = true;
+      state.oddsBoostBonus = isUpgraded("oddsBoost") ? 0.3 : 0.2;
     },
     forceSeed: (n) => {
       checkInHand("forceSeed");
-      const cost = effectiveCost("forceSeed", 4);
+      const cost = effectiveCost("forceSeed", isUpgraded("forceSeed") ? 3 : 4);
       const value = Math.max(0, Math.min(LCG_MODULUS - 1, Math.floor(Number(n) || 0)));
       record({ kind: "forceSeed", cost }, `forceSeed(${value})`);
       addCombo();
@@ -1022,10 +1046,11 @@ function run(req: RunRequest): RunResult {
     chainRoll: () => {
       checkInHand("chainRoll");
       const cost = effectiveCost("chainRoll", 3);
+      const upgraded = isUpgraded("chainRoll");
       const r1 = resolveGambleRoll(0.5);
       const r2 = resolveGambleRoll(0.5);
       const success = r1.success && r2.success;
-      const dmg = success ? 28 : 8;
+      const dmg = success ? (upgraded ? 35 : 28) : (upgraded ? 10 : 8);
       state.lastGambleCardId = null; // 2連続ロールはretryRoll非対応
       record({ kind: "gambleAttack", success, dmg, cost }, "chainRoll()");
       addCombo();
@@ -1033,17 +1058,18 @@ function run(req: RunRequest): RunResult {
     fortifyBet: () => {
       checkInHand("fortifyBet");
       const cost = effectiveCost("fortifyBet", 3);
+      const upgraded = isUpgraded("fortifyBet");
       const r1 = resolveGambleRoll(0.5);
       const r2 = resolveGambleRoll(0.5);
       const success = r1.success && r2.success;
-      const amount = success ? 32 : 10;
+      const amount = success ? (upgraded ? 40 : 32) : (upgraded ? 13 : 10);
       state.lastGambleCardId = null; // 2連続ロールはretryRoll非対応
       record({ kind: "gambleBlock", success, amount, cost }, "fortifyBet()");
       addCombo();
     },
     jackpot: () => {
       checkInHand("jackpot");
-      const cost = effectiveCost("jackpot", 4);
+      const cost = effectiveCost("jackpot", isUpgraded("jackpot") ? 3 : 4);
       const { success } = resolveGambleRoll(0.25);
       const dmg = success ? 50 : 0;
       state.lastGambleCardId = null; // 外れ時の効果がattack/block共通構造でないためretryRoll非対応
@@ -1060,12 +1086,13 @@ function run(req: RunRequest): RunResult {
       const cost = effectiveCost("seedLock", 3);
       record({ kind: "seedLock", cost }, "seedLock()");
       addCombo();
-      state.seedLockRemaining = 3;
+      state.seedLockRemaining = isUpgraded("seedLock") ? 4 : 3;
     },
     martingale: () => {
       checkInHand("martingale");
       const cost = effectiveCost("martingale", 3);
-      const dmg = 12 + state.missStreak * 6;
+      const upgraded = isUpgraded("martingale");
+      const dmg = (upgraded ? 15 : 12) + state.missStreak * (upgraded ? 7 : 6);
       state.lastGambleCardId = null; // 確定効果のためretryRoll対象外
       record({ kind: "gambleAttack", success: true, dmg, cost }, "martingale()");
       addCombo();
@@ -1322,7 +1349,7 @@ function run(req: RunRequest): RunResult {
       state.energy             = state.maxEnergy + state.nextTurnExtraEnergy;
       state.nextTurnExtraEnergy = 0;
       state.comboCount         = 0;
-      state.comboIncrement     = 1;
+      state.comboIncrement     = state.baseComboIncrement;
       state.asyncAwaitActive   = false;
       state.rebootUsedThisTurn = false;
       state.uniqueUsedThisTurn = [];
@@ -1347,14 +1374,14 @@ function run(req: RunRequest): RunResult {
       if (gimmick?.kind === "enrage") {
         const overNext = state.turn - gimmick.turnThreshold;
         if (overNext > 0) {
-          state.comboIncrement = Math.max(0, 1 - overNext * gimmick.comboIncrementDecay);
+          state.comboIncrement = Math.max(0, state.baseComboIncrement - overNext * gimmick.comboIncrementDecay);
         }
       }
 
       // 手札を全捨て札 → 5枚(+ボーナス)ドロー
       runtimeDiscardPile.push(...runtimeHand);
       runtimeHand = [];
-      const drawCount = HAND_SIZE + state.nextTurnExtraDraws;
+      const drawCount = HAND_SIZE + state.nextTurnExtraDraws + state.extraDrawPerTurn;
       state.nextTurnExtraDraws = 0;
       drawCards(drawCount);
 
