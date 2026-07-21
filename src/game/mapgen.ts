@@ -38,13 +38,17 @@ function pickNodeType(): NodeType {
   return "battle";
 }
 
-// battleノードの敵は、フロアの深さに応じた「窓」の中から抽選する（使い回しつつ緩やかに強くなる）
-function pickStageIndex(floor: number, nonBossCount: number): number {
-  const tierSize = Math.max(1, Math.ceil(nonBossCount / MAP_FLOOR_COUNT));
-  const rangeStart = Math.min(floor * tierSize, nonBossCount - 1);
-  const rangeEnd = Math.min(rangeStart + tierSize, nonBossCount);
-  const span = Math.max(1, rangeEnd - rangeStart);
-  return rangeStart + Math.floor(Math.random() * span);
+// STAGES配列の並び: 先頭からギミックなしの「基礎敵」BASE_COUNT体 → ギミック持ちの敵 → 最後にボス(isBoss)。
+// 基礎敵は強さ順に並んでいる前提（floor0〜2の窓抽選が弱→強の順を保つため）。
+const BASE_COUNT = 7;
+
+function shuffled<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 function randEventId(eventIds: string[]): string {
@@ -54,6 +58,35 @@ function randEventId(eventIds: string[]): string {
 export function generateMap(eventIds: string[]): RunMap {
   const nonBossCount = STAGES.length - 1; // 最後(isBoss)を除く
   const floors: MapNode[][] = [];
+
+  // floor0〜2（序盤）: 基礎敵BASE_COUNT体を3等分した「窓」から抽選する。
+  // floorが進むほど窓が強い方へずれるため、弱→強の順を保ちつつも同じ敵が繰り返し出うる（雑魚なので問題ない）。
+  const BASE_ZONES = 3;
+  const pickBaseStageIndex = (floor: number): number => {
+    const tierSize = Math.max(1, Math.ceil(BASE_COUNT / BASE_ZONES));
+    const rangeStart = Math.min(floor * tierSize, BASE_COUNT - 1);
+    const rangeEnd = Math.min(rangeStart + tierSize, BASE_COUNT);
+    const span = Math.max(1, rangeEnd - rangeStart);
+    return rangeStart + Math.floor(Math.random() * span);
+  };
+
+  // floor3〜7（中盤〜終盤）: ギミック持ちの敵（BASE_COUNT〜nonBossCount-1）を、
+  // マップ生成時に1体ずつ重複なく割り当てる（同じギミックを同じランで2回引かない）。
+  // どの敵を使うかはシャッフルでランごとに変えるが、割り当てる前に必ず昇順へ並べ直して
+  // 強さ順（弱→強）を保つ。ソートを忘れると序盤フロアに竜騎士が出るような逆転が起きる。
+  const GIMMICK_FLOORS = MAP_FLOOR_COUNT - BASE_ZONES; // 5
+  const gimmickPool = shuffled(
+    Array.from({ length: nonBossCount - BASE_COUNT }, (_, i) => i + BASE_COUNT),
+  );
+  const gimmickAssignment = gimmickPool
+    .slice(0, GIMMICK_FLOORS)
+    .sort((a, b) => a - b);
+
+  const pickStageIndex = (floor: number): number => {
+    if (floor < BASE_ZONES) return pickBaseStageIndex(floor);
+    const idx = gimmickAssignment[floor - BASE_ZONES];
+    return idx ?? gimmickAssignment[gimmickAssignment.length - 1] ?? BASE_COUNT;
+  };
 
   // shop/eventが連続フロアに固まらないよう、直近何フロアで出たかを覚えておく
   const MIN_SPACING = 2; // 同じ種別は最低2フロア空ける
@@ -75,7 +108,7 @@ export function generateMap(eventIds: string[]): RunMap {
         connections: [],
       };
       if (type === "battle") {
-        node.stageIndex = pickStageIndex(floor, nonBossCount);
+        node.stageIndex = pickStageIndex(floor);
       } else if (type === "event") {
         node.eventId = randEventId(eventIds);
       }
@@ -86,7 +119,7 @@ export function generateMap(eventIds: string[]): RunMap {
       const forced = nodes[Math.floor(Math.random() * nodes.length)];
       forced.type = "battle";
       forced.eventId = undefined;
-      forced.stageIndex = pickStageIndex(floor, nonBossCount);
+      forced.stageIndex = pickStageIndex(floor);
     }
     if (nodes.some(n => n.type === "shop"))  lastFloorOfType.shop  = floor;
     if (nodes.some(n => n.type === "event")) lastFloorOfType.event = floor;

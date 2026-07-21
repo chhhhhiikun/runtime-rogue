@@ -47,7 +47,7 @@ export type CardId =
   // RNG Cracker Fatal
   | "allIn"
   // チュートリアル専用（数値固定・コンボ計算なし。本編の報酬プールには含めない）
-  | "tutorialAttack" | "tutorialBlock" | "tutorialBurst" | "tutorialRecover";
+  | "tutorialAttack" | "tutorialBlock" | "tutorialBurst" | "tutorialRecover" | "tutorialHeavyBlock";
 
 export interface CardDef {
   id: CardId;
@@ -570,6 +570,12 @@ export const CARDS: Record<CardId, CardDef> = {
     description: "自分 HP +8 回復。使い捨て。コスト: 0",
     rarity: "starter", attributes: ["disposable"],
   },
+  tutorialHeavyBlock: {
+    id: "tutorialHeavyBlock", fn: "heavyBlock",
+    signature: "heavyBlock()",
+    description: "ブロック +9。コスト: 2",
+    rarity: "starter", attributes: [],
+  },
 };
 
 export const HAND_SIZE = 3; // 毎ターン開始時に3枚ドロー（山札切れで捨て札シャッフル）
@@ -678,6 +684,7 @@ export function getCardBaseCost(id: CardId): number {
     case "tutorialBlock": return 1;
     case "tutorialBurst": return 2;
     case "tutorialRecover": return 0;
+    case "tutorialHeavyBlock": return 2;
   }
 }
 

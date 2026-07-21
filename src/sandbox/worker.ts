@@ -49,6 +49,7 @@ export interface RunRequest {
   deployedCardIds?: CardId[];
   allowedFns?: string[]; // 指定時、この名前の関数のみサンドボックスに公開する（チュートリアル用）
   runDaemonAtStart?: boolean; // trueの場合、メインスクリプト実行前に一度だけDaemonを走らせる（戦闘開始時用）
+  handSizeOverride?: number; // 指定時、毎ターンのドロー枚数をHAND_SIZEの代わりにこの枚数にする（チュートリアル用。デッキ全体を毎ターン手札に持たせたい時に使う）
   gimmick?: StageGimmick; // ステージごとの対抗ギミック設定
   storedValueGimmick?: StoredValueGimmick; // Object Breakerのstoredvalueを狙った対抗ギミック（gimmickと並行して有効）
   weaknessGimmick?: WeaknessGimmick; // Bug Injectorのdebug()/弱点属性を狙った対抗ギミック（gimmickと並行して有効）
@@ -645,6 +646,12 @@ function run(req: RunRequest): RunResult {
       addCombo();
       disposeCard("tutorialRecover");
     },
+    heavyBlock: () => {
+      checkInHand("tutorialHeavyBlock");
+      const cost = effectiveCost("tutorialHeavyBlock", 2);
+      record({ kind: "block", amount: 9, cost }, "heavyBlock()");
+      addCombo();
+    },
   };
 
   const obLib: Record<string, (...args: unknown[]) => void> = {
@@ -801,12 +808,13 @@ function run(req: RunRequest): RunResult {
     if (def?.attributes.includes("unique")) checkUnique(cardId);
     const guessedType = String(guessedTypeArg);
     const { matched, disabled } = resolveWeaknessOutcome(cardId, guessedType, compareTo);
-    const dmg = disabled ? 0 : (matched ? matchedDmg : unmatchedDmg);
+    // サイレントキャッチ発動中も不一致時と同じ最低保証ダメージは出す（0にすると攻撃札がこれ1枚の場合に詰む）
+    const dmg = matched && !disabled ? matchedDmg : unmatchedDmg;
     const cost = effectiveCost(cardId, baseCost);
     record({ kind: "weaknessAttack", matched, dmg, ignoresBlock, cost }, `${def?.fn ?? cardId}(${guessedType})`);
     addCombo();
     if (disabled) {
-      consoleLogs.push(`[GIMMICK] ⚠ サイレントキャッチ発動！ 「${def?.fn ?? cardId}」は握りつぶされ無効化された`);
+      consoleLogs.push(`[GIMMICK] ⚠ サイレントキャッチ発動！ 「${def?.fn ?? cardId}」の弱点解析は握りつぶされた（最低保証ダメージのみ）`);
     }
   };
 
@@ -818,7 +826,7 @@ function run(req: RunRequest): RunResult {
     checkUnique(cardId);
     const guessedType = String(guessedTypeArg);
     const { matched, disabled } = resolveWeaknessOutcome(cardId, guessedType, "weakness");
-    const amount = disabled ? 0 : (matched ? matchedAmount : unmatchedAmount);
+    const amount = matched && !disabled ? matchedAmount : unmatchedAmount;
     const cost = effectiveCost(cardId, baseCost);
     record({ kind: "weaknessBlock", matched, amount, cost }, `errorBoundary(${guessedType})`);
     addCombo();
@@ -1381,7 +1389,7 @@ function run(req: RunRequest): RunResult {
       // 手札を全捨て札 → 5枚(+ボーナス)ドロー
       runtimeDiscardPile.push(...runtimeHand);
       runtimeHand = [];
-      const drawCount = HAND_SIZE + state.nextTurnExtraDraws + state.extraDrawPerTurn;
+      const drawCount = (req.handSizeOverride ?? HAND_SIZE) + state.nextTurnExtraDraws + state.extraDrawPerTurn;
       state.nextTurnExtraDraws = 0;
       drawCards(drawCount);
 

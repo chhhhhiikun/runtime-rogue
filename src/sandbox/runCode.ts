@@ -47,6 +47,7 @@ export function runUserCode(
   storedValueGimmick?: StoredValueGimmick,
   weaknessGimmick?: WeaknessGimmick,
   rngGimmick?: RngGimmick,
+  handSizeOverride?: number,
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     const worker = getWorker();
@@ -86,6 +87,7 @@ export function runUserCode(
       daemonCode, deployedCardIds,
       allowedFns, runDaemonAtStart,
       gimmick, storedValueGimmick, weaknessGimmick, rngGimmick,
+      handSizeOverride,
     };
     worker.postMessage(req);
   });

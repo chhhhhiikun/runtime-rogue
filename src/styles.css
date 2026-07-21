@@ -723,6 +723,7 @@ body {
   gap: 10px;
 }
 .shop-lesson-info { display: flex; flex-direction: column; gap: 4px; }
+.shop-lesson-title-row { display: flex; align-items: center; gap: 6px; }
 .shop-lesson-title { font-weight: 700; font-size: 0.88rem; }
 .shop-lesson-req { font-size: 0.74rem; color: var(--muted); }
 .shop-lesson-actions .widget-btn { padding: 6px 12px; font-size: 0.78rem; white-space: nowrap; }
@@ -850,6 +851,40 @@ body {
   color: var(--muted);
   font-style: italic;
   width: 100%;
+}
+
+/* ═══ ターン開始バナー ══════════════════════════════════════ */
+
+/* ターンの切り替わりを一瞬だけ知らせる演出。操作を妨げないようクリックは透過させる */
+.turn-banner {
+  position: fixed;
+  top: 38%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 9998;
+  pointer-events: none;
+  padding: 14px 46px;
+  border-radius: 12px;
+  background: rgba(6, 8, 14, .82);
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 24px rgba(0, 0, 0, .5);
+  color: var(--accent);
+  font-size: 1.7rem;
+  font-weight: 700;
+  letter-spacing: .12em;
+  white-space: nowrap;
+  animation: turn-banner-in .28s ease-out;
+}
+.turn-banner.hidden { display: none; }
+.turn-banner.fading { animation: turn-banner-out .22s ease-in forwards; }
+
+@keyframes turn-banner-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(.88); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes turn-banner-out {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  to   { opacity: 0; transform: translate(-50%, -50%) scale(1.04); }
 }
 
 /* ═══ オーバーレイ ══════════════════════════════════════════ */
@@ -1234,6 +1269,25 @@ body {
 .rarity-fatal   {
   background: linear-gradient(135deg, #ff4d4d, #ffae00);
   box-shadow: 0 0 6px #ff4d4d;
+}
+
+/* カードの枠・パッケージマネージャーの行を、レア度で色分けする（左端の帯） */
+.card,
+.shop-lesson-row {
+  border-left: 4px solid transparent;
+}
+.card[data-rarity="starter"],
+.shop-lesson-row[data-rarity="starter"]  { border-left-color: var(--muted); }
+.card[data-rarity="common"],
+.shop-lesson-row[data-rarity="common"]   { border-left-color: #4fc36b; }
+.card[data-rarity="uncommon"],
+.shop-lesson-row[data-rarity="uncommon"] { border-left-color: #5aafe8; }
+.card[data-rarity="rare"],
+.shop-lesson-row[data-rarity="rare"]     { border-left-color: #b06cff; }
+.card[data-rarity="fatal"],
+.shop-lesson-row[data-rarity="fatal"]    {
+  border-left-color: #ff8a3d;
+  box-shadow: -2px 0 8px rgba(255, 138, 61, 0.35);
 }
 
 /* ── カード属性タグ ────────────────────────────────────────────── */

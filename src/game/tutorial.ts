@@ -56,8 +56,10 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
   {
     title: "🛡 攻めと守り",
     stage: {
+      // 手本通り（while(true){attack();block();}）だと1ターン（attack5回=20ダメ）で倒せてしまうため、
+      // あえて1ターンでは倒しきれないHPにして「ターン終了」ボタンを押させる
       name: "見張りゴブリン",
-      hp: 20,
+      hp: 30,
       intentPattern: [{ kind: "attack", value: 5 }],
     },
     deck: ["tutorialAttack", "tutorialBlock"],
@@ -93,10 +95,11 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     title: "🔀 条件で分岐する、if",
     stage: {
       // このステップのコードは if 文（ループなし）なので、AUTOは1攻撃ごとにRUNし直す形になる。
-      // HPが大きいと「1ターン分の攻撃回数×ターン数」のRUNサイクルが積み重なり体感が遅くなるため、
-      // 1ターン（Main Clock 10 / 攻撃コスト1 = 最大10回）で倒し切れる程度に抑える
+      // 1ターン分のMain Clock（10 / 攻撃コスト1 = 最大10回・40ダメージ）で倒しきれると、
+      // else側のendTurn()が一度も呼ばれないまま終わってしまう。
+      // 「if/elseでendTurn()を呼ぶ」という本題を確実に体験させるため、1ターンでは倒しきれないHPにする
       name: "居眠り門番",
-      hp: 32,
+      hp: 48,
       intentPattern: [{ kind: "block", value: 6 }],
     },
     deck: ["tutorialAttack"],
@@ -111,12 +114,15 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
   {
     title: "⚡ あなただけの必殺技を作ろう",
     stage: {
+      // 自由に組み立てさせるのが狙いのステップなので、素材を絞りすぎないよう手札を5枚に増やした
+      // （attack + block + heavyBlock + burst + recover。同じカードの重複は避け、5種とも役割を変えた）。
+      // HPもそれに合わせて約1.5倍にした
       name: "しつこいゴブリン",
-      hp: 40,
+      hp: 60,
       intentPattern: [{ kind: "attack", value: 5 }],
     },
-    deck: ["tutorialAttack", "tutorialBlock"],
-    allowedFns: ["attack", "block", "mainClock"],
+    deck: ["tutorialAttack", "tutorialBlock", "tutorialHeavyBlock", "tutorialBurst", "tutorialRecover"],
+    allowedFns: ["attack", "block", "heavyBlock", "burst", "recover", "mainClock"],
     tip:
       "ここまでは、用意された道具を組み合わせるだけでした。ここから先は少し違います。\n\n" +
       "あんなのあったら良いな…と、考えてみましょう。\n\n" +

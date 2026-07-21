@@ -1,7 +1,7 @@
 {
   "name": "runtime-rogue",
   "private": true,
-  "version": "0.4.2",
+  "version": "0.4.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -21,6 +21,6 @@
     "monaco-editor": "^0.55.1"
   },
   "overrides": {
-    "rollup": "4.24.0"
+    "rollup": "npm:@rollup/wasm-node@4.24.0"
   }
 }

@@ -165,6 +165,19 @@ window.addEventListener("mouseup", () => {
   canvasRoot.classList.remove("panning");
 });
 
+// Ctrl/Cmd+ドラッグは、エディタ等ウィジェット上から始めてもキャンバスのパンとして扱う。
+// Ctrl/Cmd+ホイールのズームと同じく、Monaco側の処理（テキスト選択等）より先に
+// キャプチャ段で割り込む必要がある
+window.addEventListener("mousedown", (e) => {
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  e.stopPropagation();
+  panning = true;
+  panSX = e.clientX; panSY = e.clientY;
+  panCX = cvX; panCY = cvY;
+  canvasRoot.classList.add("panning");
+}, { capture: true });
+
 function zoomCanvasAt(clientX: number, clientY: number, deltaY: number): void {
   const factor   = deltaY < 0 ? 1.1 : 1 / 1.1;
   const newScale = Math.min(3, Math.max(0.15, cvScale * factor));
@@ -1534,6 +1547,25 @@ function updateLogSpeedBtn(): void {
   if (btn) btn.textContent = `⏩ ${logSpeed}x`;
 }
 
+// ── ターン開始バナー ────────────────────────────────────────────────
+// ターンの切り替わりを画面中央に一瞬だけ表示する。表示中はアクション再生を止めて間を作る。
+// （プレイヤーのコードはWorker内で既に実行済みなので、止まるのは再生であってコードではない）
+const TURN_BANNER_MS = 700;
+async function showTurnBanner(turn: number): Promise<void> {
+  const el = document.getElementById("turn-banner");
+  if (!el) {
+    await scaledSleep(TURN_BANNER_MS);
+    return;
+  }
+  el.textContent = `ターン ${turn}`;
+  el.classList.remove("hidden", "fading");
+  void el.offsetWidth; // アニメーションを毎回再生させるためリフローを強制する
+  await scaledSleep(TURN_BANNER_MS);
+  el.classList.add("fading");
+  await scaledSleep(200);
+  el.classList.add("hidden");
+}
+
 // ── 実行中の行ハイライト・カードハイライト ──────────────────────────
 // バトルログのアクション再生に合わせて、そのアクションを起こしたコード行とカードを光らせる演出。
 // 常時ONにはせず、好みでOFFにできるようトグルボタンを用意する
@@ -1809,9 +1841,13 @@ function renderPackageManagerScreen(): void {
     const price = PM_INSTALL_PRICE[def.rarity] ?? PM_INSTALL_PRICE.common;
     const row = document.createElement("div");
     row.className = "shop-lesson-row";
+    row.dataset.rarity = def.rarity;
     row.innerHTML = `
       <div class="shop-lesson-info">
-        <span class="shop-lesson-title">${def.signature}</span>
+        <div class="shop-lesson-title-row">
+          <span class="rarity-badge rarity-${def.rarity}" title="${def.rarity}"></span>
+          <span class="shop-lesson-title">${def.signature}</span>
+        </div>
         <span class="shop-lesson-req">${def.description}</span>
       </div>
       <div class="shop-lesson-actions">
@@ -1840,9 +1876,13 @@ function renderPackageManagerScreen(): void {
     const count = deckCards.filter(c => c === id).length;
     const row = document.createElement("div");
     row.className = "shop-lesson-row";
+    row.dataset.rarity = def.rarity;
     row.innerHTML = `
       <div class="shop-lesson-info">
-        <span class="shop-lesson-title">${def.signature} ×${count}</span>
+        <div class="shop-lesson-title-row">
+          <span class="rarity-badge rarity-${def.rarity}" title="${def.rarity}"></span>
+          <span class="shop-lesson-title">${def.signature} ×${count}</span>
+        </div>
         <span class="shop-lesson-req">${def.description}</span>
       </div>
       <div class="shop-lesson-actions">
@@ -1871,9 +1911,11 @@ function renderPackageManagerScreen(): void {
     const upgradedDesc = CARD_UPGRADE_DESCRIPTIONS[id];
     const row = document.createElement("div");
     row.className = "shop-lesson-row refactor-row";
+    row.dataset.rarity = def.rarity;
     row.innerHTML = `
       <div class="shop-lesson-main">
         <div class="shop-lesson-info">
+          <span class="rarity-badge rarity-${def.rarity}" title="${def.rarity}"></span>
           <span class="shop-lesson-title">${def.signature}</span>
           <span class="shop-lesson-req">${def.description}</span>
         </div>
@@ -2492,10 +2534,13 @@ async function startBattleInner(): Promise<void> {
   }
   entries.forEach(e => { e.errorEl.textContent = ""; });
 
-  // 毎ターン開始時に5枚ドロー（1ターン目分をここで実行）
-  deck.draw(HAND_SIZE);
+  // 毎ターン開始時に3枚ドロー（1ターン目分をここで実行）。
+  // チュートリアルはステップごとに専用デッキ全体を最初から手札に持たせたい（例: Step6は5枚）ため、
+  // 通常のHAND_SIZEではなくデッキ全体を引く（2ターン目以降は通常通りHAND_SIZE枚のサイクルに戻る）
+  deck.draw(tutorialMode ? deckCards.length : HAND_SIZE);
   appendLog(`─── ターン 1 ───`, "sys");
   render(state, deck);
+  await showTurnBanner(1);
 
   // 戦闘開始時にもDaemonを1回実行する（デプロイ済みが0枚なら実質何もしない）
   const characterCards = getRunCharacterCards();
@@ -2513,6 +2558,7 @@ async function startBattleInner(): Promise<void> {
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
     undefined, !tutorialDaemonLocked(), stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick, stage.rngGimmick,
+    tutorialMode ? deckCards.length : undefined,
   );
   await processRunResult(result);
 }
@@ -2578,6 +2624,7 @@ async function processRunResult(result: RunResult, entry?: EditorEntry): Promise
       appendLog(text, isEnemyHeal ? "heal" : "dmg");
       render(state, deck, getDisabledCards());
       updateDaemonDisplay();
+      if (state.player.hp > 0 && state.enemy.hp > 0) await showTurnBanner(state.turn);
       await scaledSleep(300);
       if (state.player.hp <= 0) break;
       continue;
@@ -2735,6 +2782,7 @@ async function onRun(entry: EditorEntry): Promise<void> {
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
     allowedFns, false, stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick, stage.rngGimmick,
+    tutorialMode ? deckCards.length : undefined,
   );
   await processRunResult(result, entry);
 }
@@ -2763,6 +2811,7 @@ async function onEndTurn(): Promise<void> {
     stage.intentPattern, currentIntentIndex,
     daemonCodeForRun, [...deck.deployedCards],
     undefined, false, stage.gimmick, stage.storedValueGimmick, stage.weaknessGimmick, stage.rngGimmick,
+    tutorialMode ? deckCards.length : undefined,
   );
   await processRunResult(result);
 }
@@ -3354,6 +3403,14 @@ if (import.meta.env.DEV) {
   w.__state           = () => state;
   w.__hand            = () => deck?.hand;
   w.__skipToStage     = (i: number) => { currentStageIndex = i; startBattle(); };
+  // チュートリアルの特定ステップへ直接ジャンプする（tutorialStepIndex/deckCards両方を同期する。テスト用）
+  w.__skipToTutorialStep = (i: number) => {
+    if (!tutorialMode) return;
+    tutorialStepIndex = i;
+    currentStageIndex = i;
+    deckCards = [...TUTORIAL_STEPS[i].deck];
+    startBattle();
+  };
   w.__entries         = () => entries;
   w.__runMap          = () => runMap;
   w.__runCurrentNodeId = () => runCurrentNodeId;
@@ -3388,6 +3445,8 @@ if (import.meta.env.DEV) {
     render(state, deck, getDisabledCards());
     if (state.enemy.hp <= 0) finish(true);
   };
+  // 実行ガードの状態（__runCodeが即座に返る原因の切り分け用）
+  w.__flags = () => ({ busy, over, startingBattle });
   // 現在の主要な数値状態をまとめて返す（__runCode前後の差分確認用）
   w.__snapshot = () => state ? {
     mainClock: state.energy, maxMainClock: state.maxEnergy,

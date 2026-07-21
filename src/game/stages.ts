@@ -84,6 +84,19 @@ export const STAGES: StageDef[] = [
     ],
   },
   {
+    // 約2ターン。素早い連続攻撃
+    name: "コウモリ",
+    hp: 110,
+    byteReward: 735,
+    cashReward: 2050,
+    intentPattern: [
+      { kind: "attack", value: 7  },
+      { kind: "attack", value: 7  },
+      { kind: "block",  value: 6  },
+      { kind: "attack", value: 10 },
+    ],
+  },
+  {
     // 約2〜3ターン。ブロックあり
     name: "ゴブリン",
     hp: 140,
@@ -97,6 +110,19 @@ export const STAGES: StageDef[] = [
     ],
   },
   {
+    // 約3ターン。やや重い連撃
+    name: "ホブゴブリン",
+    hp: 170,
+    byteReward: 805,
+    cashReward: 2150,
+    intentPattern: [
+      { kind: "attack", value: 9  },
+      { kind: "block",  value: 9  },
+      { kind: "attack", value: 12 },
+      { kind: "attack", value: 9  },
+    ],
+  },
+  {
     // 約3ターン。高火力ターンあり
     name: "スケルトン",
     hp: 200,
@@ -107,6 +133,19 @@ export const STAGES: StageDef[] = [
       { kind: "block",  value: 9  },
       { kind: "attack", value: 14 },
       { kind: "attack", value: 8  },
+    ],
+  },
+  {
+    // 約3〜4ターン。ブロックと高火力の混成
+    name: "リザードマン",
+    hp: 240,
+    byteReward: 875,
+    cashReward: 2250,
+    intentPattern: [
+      { kind: "block",  value: 13 },
+      { kind: "attack", value: 12 },
+      { kind: "attack", value: 14 },
+      { kind: "attack", value: 12 },
     ],
   },
   {
